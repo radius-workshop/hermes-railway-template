@@ -172,6 +172,18 @@ for skill_file in /app/skills/*.md; do
   echo "[bootstrap] Installed skill: $(basename "$skill_file")"
 done
 
+# Populate .well-known skills directory — only skills with `published: true` in frontmatter
+WELL_KNOWN_SKILLS_DIR="${HERMES_HOME}/well-known-skills"
+mkdir -p "$WELL_KNOWN_SKILLS_DIR"
+for skill_file in /app/skills/*.md; do
+  [[ -f "$skill_file" ]] || continue
+  grep -q "^published: true" "$skill_file" || continue
+  skill_name="$(basename "$skill_file" .md)"
+  mkdir -p "${WELL_KNOWN_SKILLS_DIR}/${skill_name}"
+  cp "$skill_file" "${WELL_KNOWN_SKILLS_DIR}/${skill_name}/SKILL.md"
+  echo "[bootstrap] Installed well-known skill: ${skill_name}"
+done
+
 if [[ -z "${TELEGRAM_ALLOWED_USERS:-}${DISCORD_ALLOWED_USERS:-}${SLACK_ALLOWED_USERS:-}" ]]; then
   if ! is_true "${GATEWAY_ALLOW_ALL_USERS:-}" && ! is_true "${TELEGRAM_ALLOW_ALL_USERS:-}" && ! is_true "${DISCORD_ALLOW_ALL_USERS:-}" && ! is_true "${SLACK_ALLOW_ALL_USERS:-}"; then
     echo "[bootstrap] WARNING: No allowlists configured. Gateway defaults to deny-all; use DM pairing or set *_ALLOWED_USERS." >&2
@@ -191,6 +203,9 @@ for key in \
     unset "$key"
   fi
 done
+
+echo "[bootstrap] Starting skills server..."
+bun /app/scripts/skills-server/index.ts &
 
 echo "[bootstrap] Starting Hermes gateway..."
 exec hermes gateway

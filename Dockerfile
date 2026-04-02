@@ -18,11 +18,19 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -e "/opt/hermes-agent[messaging,cron,cli,pty]"
 
 
+FROM oven/bun:1.3-slim AS bun-builder
+
+WORKDIR /app/scripts/skills-server
+COPY scripts/skills-server/package.json ./
+RUN bun install --frozen-lockfile 2>/dev/null || bun install
+
+
 FROM python:3.11-slim
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates \
+    git \
     tini \
     nodejs \
     npm \
@@ -35,6 +43,7 @@ ENV PATH="/opt/venv/bin:${PATH}" \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/hermes-agent /opt/hermes-agent
+COPY --from=oven/bun:1.3-slim /usr/local/bin/bun /usr/local/bin/bun
 
 WORKDIR /app
 COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
@@ -42,6 +51,9 @@ RUN chmod +x /app/scripts/entrypoint.sh
 
 COPY scripts/radius /app/scripts/radius
 RUN cd /app/scripts/radius && npm install --omit=dev --no-fund --no-audit
+
+COPY scripts/skills-server /app/scripts/skills-server
+COPY --from=bun-builder /app/scripts/skills-server/node_modules /app/scripts/skills-server/node_modules
 
 COPY skills /app/skills
 

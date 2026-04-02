@@ -13,13 +13,14 @@ This template is worker-only: setup and configuration are done through Railway V
 - Persistent Hermes state on a Railway volume at `/data`
 - Telegram, Discord, or Slack support (at least one required)
 - Built-in Radius Testnet wallet (auto-generated on first boot, auto-funded via faucet)
+- Agent discovery layer served at `/.well-known/*` — ERC 8004 registration and Cloudflare agent skills discovery
 
 ## How it works
 
 1. You configure required variables in Railway.
 2. On first boot, entrypoint initializes Hermes under `/data/.hermes`.
 3. On future boots, the same persisted state is reused.
-4. Container starts `hermes gateway`.
+4. Container starts a Bun HTTP server (skills discovery) and `hermes gateway` in parallel.
 
 ## Railway deploy instructions
 
@@ -130,6 +131,46 @@ Once deployed, you can ask the agent:
 
 The agent runs the preconfigured Node.js scripts at `/app/scripts/radius/` using its terminal tool.
 
+## Agent discovery
+
+This template runs a lightweight Bun/Hono HTTP server alongside Hermes that serves agent discovery endpoints at `/.well-known/*`. It binds to Railway's `PORT`, so once you generate a public domain in Railway (Settings → Networking → Generate Domain), the endpoints are live automatically.
+
+### Endpoints
+
+| Path | Spec | Description |
+|---|---|---|
+| `/.well-known/agent-registration.json` | [ERC 8004](https://eips.ethereum.org/EIPS/eip-8004) | Agent identity, wallet address, supported services |
+| `/.well-known/agent-skills/index.json` | [Cloudflare Agent Skills Discovery RFC](https://github.com/cloudflare/agent-skills-discovery-rfc) | Index of published skills with digests and URLs |
+| `/.well-known/agent-skills/:name/SKILL.md` | Cloudflare Agent Skills Discovery RFC | Individual skill document |
+
+**`agent-registration.json`** advertises this agent's on-chain identity per ERC 8004. It includes the wallet address derived from `RADIUS_WALLET_ADDRESS`, x402 payment support, Radius network RPC endpoints, and faucet URLs. Customize the agent name with `AGENT_NAME`.
+
+**`agent-skills/index.json`** lets other agents and tools enumerate what this agent can do. Each entry includes the skill name, description, a URL to fetch the full skill document, and a SHA-256 content digest so consumers can detect updates.
+
+### Publishing a skill
+
+Skills are opt-in. A skill file is only surfaced through the discovery endpoints if its frontmatter contains `published: true`:
+
+```markdown
+---
+name: my-skill
+description: What this skill does
+published: true
+---
+
+# My Skill
+...
+```
+
+Skills without `published: true` are installed into Hermes for the agent's own use but are never served publicly.
+
+### Variables
+
+| Variable | Description |
+|---|---|
+| `AGENT_NAME` | Display name in `agent-registration.json`. Defaults to `Hermes Agent`. |
+| `DEBUG_SKILLS=1` | Enables a `/debug/skills` endpoint showing the server's runtime state. Off by default. |
+
 ## Customizing the agent with instructions
 
 ### Skills (agent knowledge files)
@@ -189,7 +230,9 @@ hermes pairing list
 4. Creates `${HERMES_HOME}/config.yaml` if it doesn't exist.
 5. Initializes Radius wallet if not already done (generates key, calls faucet).
 6. Copies all `skills/*.md` files to `${HERMES_HOME}/skills/` (overwrites on each boot).
-7. Starts `hermes gateway`.
+7. Copies skills with `published: true` frontmatter to `${HERMES_HOME}/well-known-skills/` in `name/SKILL.md` structure.
+8. Starts the Bun skills server in background (binds `PORT`).
+9. Starts `hermes gateway` in foreground.
 
 ## Troubleshooting
 

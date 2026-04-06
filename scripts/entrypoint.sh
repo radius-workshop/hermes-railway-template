@@ -100,7 +100,7 @@ for key in \
   SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_ALLOWED_USERS SLACK_ALLOW_ALL_USERS SLACK_HOME_CHANNEL SLACK_HOME_CHANNEL_NAME WHATSAPP_ENABLED WHATSAPP_ALLOWED_USERS \
   GATEWAY_ALLOW_ALL_USERS \
   FIRECRAWL_API_KEY NOUS_API_KEY BROWSERBASE_API_KEY BROWSERBASE_PROJECT_ID BROWSERBASE_PROXIES BROWSERBASE_ADVANCED_STEALTH BROWSER_SESSION_TIMEOUT BROWSER_INACTIVITY_TIMEOUT FAL_KEY ELEVENLABS_API_KEY VOICE_TOOLS_OPENAI_KEY \
-  TINKER_API_KEY WANDB_API_KEY RL_API_URL GITHUB_TOKEN \
+  TINKER_API_KEY WANDB_API_KEY RL_API_URL GITHUB_TOKEN BYTEROVER_API_KEY BYTEROVER_LOCAL LINEAR_API_KEY LINEAR_TEAM_ID LINEAR_PROJECT_ID \
   TERMINAL_ENV TERMINAL_BACKEND TERMINAL_DOCKER_IMAGE TERMINAL_SINGULARITY_IMAGE TERMINAL_MODAL_IMAGE TERMINAL_CWD TERMINAL_TIMEOUT TERMINAL_LIFETIME_SECONDS TERMINAL_CONTAINER_CPU TERMINAL_CONTAINER_MEMORY TERMINAL_CONTAINER_DISK TERMINAL_CONTAINER_PERSISTENT TERMINAL_SANDBOX_DIR TERMINAL_SSH_HOST TERMINAL_SSH_USER TERMINAL_SSH_PORT TERMINAL_SSH_KEY SUDO_PASSWORD \
   WEB_TOOLS_DEBUG VISION_TOOLS_DEBUG MOA_TOOLS_DEBUG IMAGE_TOOLS_DEBUG CONTEXT_COMPRESSION_ENABLED CONTEXT_COMPRESSION_THRESHOLD CONTEXT_COMPRESSION_MODEL HERMES_MAX_ITERATIONS HERMES_TOOL_PROGRESS HERMES_TOOL_PROGRESS_MODE \
   RADIUS_PRIVATE_KEY RADIUS_WALLET_ADDRESS RADIUS_NETWORK RADIUS_AUTO_FUND
@@ -161,6 +161,42 @@ if command -v node >/dev/null 2>&1; then
   fi
 else
   echo "[bootstrap] WARNING: Node.js not found, skipping Radius wallet setup." >&2
+fi
+
+# === ByteRover: configure memory provider (one-time) ===
+BYTEROVER_MARKER="${HERMES_HOME}/.byterover/initialized"
+mkdir -p "${HERMES_HOME}/.byterover"
+if [[ -n "${BYTEROVER_API_KEY:-}" ]] || is_true "${BYTEROVER_LOCAL:-}"; then
+  if [[ ! -f "$BYTEROVER_MARKER" ]]; then
+    if [[ -n "${BYTEROVER_API_KEY:-}" ]]; then
+      # Cloud mode: authenticate with API key
+      export BRV_API_KEY="${BYTEROVER_API_KEY}"
+      echo "[bootstrap] Authenticating ByteRover CLI..."
+      if brv login -k "$BRV_API_KEY" 2>/dev/null || brv login --api-key "$BRV_API_KEY" 2>/dev/null; then
+        echo "[bootstrap] ByteRover authenticated."
+      else
+        echo "[bootstrap] WARNING: brv login failed — check BYTEROVER_API_KEY." >&2
+      fi
+    else
+      echo "[bootstrap] ByteRover local mode — skipping cloud authentication."
+    fi
+    echo "[bootstrap] Configuring Hermes to use ByteRover memory provider..."
+    if hermes config set memory.provider byterover; then
+      date -u +"%Y-%m-%dT%H:%M:%SZ" > "$BYTEROVER_MARKER"
+      echo "[bootstrap] ByteRover memory provider configured."
+    else
+      echo "[bootstrap] WARNING: Failed to configure ByteRover. Will retry on next boot." >&2
+    fi
+  else
+    echo "[bootstrap] ByteRover already configured."
+    if [[ -n "${BYTEROVER_API_KEY:-}" ]]; then
+      # Re-authenticate on every boot (token may have expired)
+      export BRV_API_KEY="${BYTEROVER_API_KEY}"
+      brv login -k "$BRV_API_KEY" 2>/dev/null || brv login --api-key "$BRV_API_KEY" 2>/dev/null || true
+    fi
+  fi
+else
+  echo "[bootstrap] BYTEROVER_API_KEY not set and BYTEROVER_LOCAL not enabled — skipping ByteRover setup."
 fi
 
 # Install bundled skills into Hermes skills directory

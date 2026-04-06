@@ -172,6 +172,50 @@ Once deployed, you can ask the agent:
 
 The agent runs the preconfigured Node.js scripts at `/app/scripts/radius/` using its terminal tool.
 
+## Linear integration
+
+This template includes a built-in Linear skill. The agent can create and update issues, query projects, add comments, and manage team workflows via the [radius-workshop/linear-claude-skill](https://github.com/radius-workshop/linear-claude-skill) tooling, which is compiled and bundled into the container image at `/app/scripts/linear-skill`.
+
+### Prerequisites
+
+1. Go to [linear.app](https://linear.app) → **Settings** → **Security & access** → **Personal API keys**
+2. Click **Create key** — copy the key (starts with `lin_api_`)
+3. Add it to Railway as `LINEAR_API_KEY`
+
+### Linear variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `LINEAR_API_KEY` | Yes (for Linear) | Personal API key from Linear Settings → API |
+| `LINEAR_TEAM_ID` | No | Scopes operations to a specific team. Find it via the agent: "list my Linear teams" |
+| `LINEAR_PROJECT_ID` | No | Default project for issue operations. Find it via: "show my Linear projects" |
+
+### What the agent can do
+
+Once `LINEAR_API_KEY` is set, you can ask the agent:
+
+- *"List open issues in the [project] project"*
+- *"Create a bug: users can't log in on mobile"*
+- *"Mark ENG-123 as done"*
+- *"What's the status of the [project] project?"*
+- *"Add a comment to ENG-456: found the root cause"*
+- *"Create a sub-issue under ENG-100 for the API work"*
+- *"Show me all issues assigned to me"*
+
+The agent follows Linear best practices: each new issue gets a detailed description, labels (type + domain), and a project assignment.
+
+### Scoping to a specific project
+
+Set `LINEAR_PROJECT_ID` to focus the agent on a specific project by default. The agent will use it as the default context when you ask about issues or ask it to create something without specifying a project.
+
+To find your project ID, ask the agent: *"List my Linear projects and show their IDs"*
+
+### Delegating from Linear (coming soon)
+
+Inbound delegation — assigning Linear issues to the agent or @mentioning it in comments — requires a webhook integration and is planned for a future release.
+
+---
+
 ## Agent discovery
 
 This template runs a lightweight Bun/Hono HTTP server alongside Hermes that serves agent discovery endpoints at `/.well-known/*`. It binds to Railway's `PORT`, so once you generate a public domain in Railway (Settings → Networking → Generate Domain), the endpoints are live automatically.

@@ -37,7 +37,10 @@ RUN apt-get update \
     npm \
   && rm -rf /var/lib/apt/lists/*
 
-ENV PATH="/opt/venv/bin:${PATH}" \
+# Install ByteRover before HOME is remapped to /data so it lands in /root/.local/bin
+RUN curl -fsSL https://byterover.dev/install.sh | sh
+
+ENV PATH="/root/.local/bin:/opt/venv/bin:${PATH}" \
   PYTHONUNBUFFERED=1 \
   HERMES_HOME=/data/.hermes \
   HOME=/data
@@ -52,6 +55,13 @@ RUN sed -i 's/\r$//' /app/scripts/entrypoint.sh && chmod +x /app/scripts/entrypo
 
 COPY scripts/radius /app/scripts/radius
 RUN cd /app/scripts/radius && npm install --omit=dev --no-fund --no-audit
+
+# Install and build linear-claude-skill
+RUN git clone --depth 1 https://github.com/radius-workshop/linear-claude-skill /app/scripts/linear-skill \
+  && cd /app/scripts/linear-skill \
+  && npm install --no-fund --no-audit \
+  && npm run build \
+  && npm prune --omit=dev
 
 COPY scripts/skills-server /app/scripts/skills-server
 COPY --from=bun-builder /app/scripts/skills-server/node_modules /app/scripts/skills-server/node_modules

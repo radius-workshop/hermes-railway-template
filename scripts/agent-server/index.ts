@@ -9,6 +9,7 @@ const app = new Hono();
 
 const SKILLS_ROOT =
   process.env.SKILLS_ROOT ?? "/data/.hermes/well-known-skills";
+const SAFE_NAME_RE = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
 const BASE_URL =
   process.env.PUBLIC_URL ??
   (process.env.RAILWAY_PUBLIC_DOMAIN
@@ -75,6 +76,8 @@ function buildIndex(): string {
 
   for (const entry of entries) {
     try {
+      if (!SAFE_NAME_RE.test(entry)) continue;
+
       const skillDir = join(SKILLS_ROOT, entry);
       if (!statSync(skillDir).isDirectory()) continue;
 
@@ -84,7 +87,7 @@ function buildIndex(): string {
       const buf = readFileSync(skillMdPath);
       const content = buf.toString("utf8");
       if (!isPublished(content)) continue;
-      const description = parseDescription(content);
+      const description = parseDescription(content).replace(/<[^>]*>/g, "");
 
       skills.push({
         name: entry,
@@ -149,7 +152,7 @@ app.on(
   (c) => {
     const skillName = c.req.param("name");
 
-    if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(skillName)) {
+    if (!SAFE_NAME_RE.test(skillName)) {
       return c.text("Not Found", 404);
     }
 
@@ -349,6 +352,17 @@ app.get("/", (c) => {
   </section>
 
   <script>
+    function esc(str) {
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    function safeUrl(url) {
+      try { const u = new URL(url); return u.protocol === 'https:' || u.protocol === 'http:' ? u.href : ''; }
+      catch { return ''; }
+    }
+
     async function load() {
       try {
         const reg = await fetch('/.well-known/agent-registration.json').then(r => r.json());
@@ -358,7 +372,7 @@ app.get("/", (c) => {
         if (reg.wallet) {
           const walletEl = document.getElementById('wallet-address');
           walletEl.textContent = reg.wallet;
-          walletEl.href = \`https://testnet.radiustech.xyz/address/\${reg.wallet}\`;
+          walletEl.href = \`https://testnet.radiustech.xyz/address/\${esc(reg.wallet)}\`;
           document.getElementById('section-wallet').style.display = '';
         }
 
@@ -366,7 +380,7 @@ app.get("/", (c) => {
           const contractAddr = reg.identityRegistry.split(':').pop();
           const registryEl = document.getElementById('registry-address');
           registryEl.textContent = reg.identityRegistry;
-          registryEl.href = \`https://testnet.radiustech.xyz/address/\${contractAddr}\`;
+          registryEl.href = \`https://testnet.radiustech.xyz/address/\${esc(contractAddr)}\`;
           document.getElementById('section-registry').style.display = '';
         }
 
@@ -374,9 +388,27 @@ app.get("/", (c) => {
         const services = reg.services ?? {};
         const svcKeys = Object.keys(services);
         if (svcKeys.length) {
-          svcEl.innerHTML = svcKeys.map(k =>
-            \`<div><span class="dim">\${k}</span> <a href="\${services[k]}" target="_blank" rel="noopener">\${services[k]}</a></div>\`
-          ).join('');
+          svcEl.textContent = '';
+          svcKeys.forEach(k => {
+            const row = document.createElement('div');
+            const label = document.createElement('span');
+            label.className = 'dim';
+            label.textContent = k;
+            row.appendChild(label);
+            row.appendChild(document.createTextNode(' '));
+            const href = safeUrl(services[k]);
+            if (href) {
+              const a = document.createElement('a');
+              a.href = href;
+              a.target = '_blank';
+              a.rel = 'noopener';
+              a.textContent = services[k];
+              row.appendChild(a);
+            } else {
+              row.appendChild(document.createTextNode(services[k]));
+            }
+            svcEl.appendChild(row);
+          });
           document.getElementById('section-services').style.display = '';
         }
       } catch (e) {
@@ -388,17 +420,46 @@ app.get("/", (c) => {
         const el = document.getElementById('skills-list');
         const skills = idx.skills ?? [];
         if (!skills.length) {
-          el.innerHTML = '<span class="dim">no published skills</span>';
+          el.textContent = '';
+          const span = document.createElement('span');
+          span.className = 'dim';
+          span.textContent = 'no published skills';
+          el.appendChild(span);
           return;
         }
-        el.innerHTML = skills.map(s => \`
-          <div class="skill">
-            <div class="skill-name"><a href="\${s.url}" target="_blank" rel="noopener">\${s.name}</a></div>
-            \${s.description ? \`<div class="skill-desc">\${s.description}</div>\` : ''}
-          </div>
-        \`).join('');
+        el.textContent = '';
+        skills.forEach(s => {
+          const skill = document.createElement('div');
+          skill.className = 'skill';
+          const nameDiv = document.createElement('div');
+          nameDiv.className = 'skill-name';
+          const href = safeUrl(s.url);
+          if (href) {
+            const a = document.createElement('a');
+            a.href = href;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.textContent = s.name;
+            nameDiv.appendChild(a);
+          } else {
+            nameDiv.textContent = s.name;
+          }
+          skill.appendChild(nameDiv);
+          if (s.description) {
+            const descDiv = document.createElement('div');
+            descDiv.className = 'skill-desc';
+            descDiv.textContent = s.description;
+            skill.appendChild(descDiv);
+          }
+          el.appendChild(skill);
+        });
       } catch (e) {
-        document.getElementById('skills-list').innerHTML = '<span class="error">failed to load skills</span>';
+        const el = document.getElementById('skills-list');
+        el.textContent = '';
+        const span = document.createElement('span');
+        span.className = 'error';
+        span.textContent = 'failed to load skills';
+        el.appendChild(span);
       }
     }
 

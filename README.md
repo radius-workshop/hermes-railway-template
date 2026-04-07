@@ -14,7 +14,7 @@ This template is worker-only: setup and configuration are done through Railway V
 - Telegram, Discord, or Slack support (at least one required)
 - Built-in Radius Testnet wallet (auto-generated on first boot, auto-funded via faucet)
 - Agent discovery layer served at `/.well-known/*` — ERC 8004 registration, Cloudflare agent skills discovery, and A2A agent card
-- Agent-to-agent (A2A) communication: a JWT-gated `POST /a2a` endpoint that accepts tasks from other agents and routes them to Hermes for processing
+- Agent-to-agent (A2A) communication with two execution modes: direct (inline `message/send` + `message/stream`) and delegated (webhook-backed async submission)
 - Persistent cryptographic identity derived from the wallet key — the same `RADIUS_PRIVATE_KEY` signs both transactions and JWTs
 
 ## How it works
@@ -22,7 +22,7 @@ This template is worker-only: setup and configuration are done through Railway V
 1. You configure required variables in Railway.
 2. On first boot, entrypoint initializes Hermes under `/data/.hermes`.
 3. On future boots, the same persisted state is reused.
-4. Container starts a Bun HTTP server (skills discovery) and `hermes gateway` in parallel.
+4. Container starts the Python/FastAPI agent server and `hermes gateway` in parallel.
 
 ## Railway deploy instructions
 
@@ -220,7 +220,7 @@ Inbound delegation — assigning Linear issues to the agent or @mentioning it in
 
 ## Agent discovery
 
-This template runs a lightweight Bun/Hono HTTP server alongside Hermes that serves agent discovery endpoints at `/.well-known/*`. It binds to Railway's `PORT`, so once you generate a public domain in Railway (Settings → Networking → Generate Domain), the endpoints are live automatically.
+This template runs a lightweight Python/FastAPI HTTP server alongside Hermes that serves agent discovery endpoints at `/.well-known/*`. It binds to Railway's `PORT`, so once you generate a public domain in Railway (Settings → Networking → Generate Domain), the endpoints are live automatically.
 
 ### Endpoints
 
@@ -232,9 +232,9 @@ This template runs a lightweight Bun/Hono HTTP server alongside Hermes that serv
 | `/.well-known/agent-skills/index.json` | Public | [Cloudflare Agent Skills Discovery RFC](https://github.com/cloudflare/agent-skills-discovery-rfc) | Index of published skills with digests and URLs |
 | `/.well-known/agent-skills/:name/SKILL.md` | Public | Cloudflare Agent Skills Discovery RFC | Individual skill document |
 
-**`agent-card.json`** is the A2A discovery document. Other agents fetch it to learn how to authenticate and what this agent can do. It includes the agent's `did:key` identity (derived from `RADIUS_PRIVATE_KEY`), the `POST /a2a` interface, and the `bearer_jwt` security scheme. Skills are pulled live from the skill discovery index.
+**`agent-card.json`** is the A2A discovery document. Other agents fetch it to learn how to authenticate and what this agent can do. It includes the agent's `did:web` identity (derived from `RADIUS_PRIVATE_KEY`), the `POST /a2a` interface, and the `bearer_jwt` security scheme. Skills are pulled live from the skill discovery index.
 
-**`agent-registration.json`** advertises this agent's on-chain identity per ERC 8004. It includes the wallet address derived from `RADIUS_WALLET_ADDRESS`, the agent's `did:key`, x402 payment support, Radius network RPC endpoints, and faucet URLs. Customize the agent name with `AGENT_NAME`.
+**`agent-registration.json`** advertises this agent's on-chain identity per ERC 8004. It includes the wallet address derived from `RADIUS_WALLET_ADDRESS`, the agent's `did:web`, x402 payment support, Radius network RPC endpoints, and faucet URLs. Customize the agent name with `AGENT_NAME`.
 
 **`agent-skills/index.json`** lets other agents and tools enumerate what this agent can do. Each entry includes the skill name, description, a URL to fetch the full skill document, and a SHA-256 content digest so consumers can detect updates.
 
@@ -308,7 +308,7 @@ The returned token is a 24-hour JWT signed by this agent's `did:web` identity. U
 
 #### Signing your own JWT (agent-to-agent)
 
-If the calling agent also runs this template (or uses [agentcommercekit](https://github.com/agentcommercekit/ack)), it already has a `did:key` and can sign its own JWT:
+If the calling agent also runs this template (or uses [agentcommercekit](https://github.com/agentcommercekit/ack)), it can sign its own JWT with a DID-compatible keypair:
 
 ```ts
 import { createJwt, createJwtSigner, generateKeypair, createDidKeyUri, hexStringToBytes } from "agentcommercekit"
@@ -335,11 +335,26 @@ The container bootstraps a default Claude permission allowlist in `${HOME}/.clau
 - `curl` calls to discovery endpoints, `/token`, and `/a2a`
 - `python3 /app/scripts/agent_server/gen_jwt.py` to generate JWTs with the correct ES256K signature format
 
-### A2A task endpoint (`POST /a2a`)
+### A2A endpoint (`POST /a2a`)
 
-The `/a2a` endpoint accepts [A2A](https://github.com/a2aproject/A2A) JSON-RPC 2.0 requests and bridges them to Hermes for processing.
+The `/a2a` endpoint accepts [A2A](https://github.com/a2aproject/A2A) JSON-RPC 2.0 requests and now supports two execution modes controlled by `A2A_MODE`.
 
-**Current supported method:** `message/send`
+**Direct mode (`A2A_MODE=direct`)**
+
+- `message/send` returns an inline completed result from Hermes.
+- `message/stream` returns SSE events with incremental text deltas and a final completion event.
+- `context_id` is forwarded as `X-Hermes-Session-Id` for session continuity.
+
+**Delegated mode (`A2A_MODE=delegated`)**
+
+- Preserves the existing webhook handoff behavior (`/a2a` → Hermes `/webhooks/a2a`).
+- `message/send` returns `TASK_STATE_SUBMITTED`.
+- `message/stream` is not supported in delegated mode.
+
+**Auto mode (`A2A_MODE=auto`, default)**
+
+- Uses direct handling when `HERMES_API_KEY` is configured.
+- Falls back to delegated handling for `message/send` otherwise.
 
 ```bash
 curl -X POST https://your-agent.railway.app/a2a \
@@ -358,7 +373,7 @@ curl -X POST https://your-agent.railway.app/a2a \
   }'
 ```
 
-Response:
+Example response in delegated mode:
 
 ```json
 {
@@ -375,11 +390,25 @@ Response:
 }
 ```
 
-The task is submitted asynchronously. Hermes processes it and responds via whichever messaging platform it is connected to (Telegram, Discord, Slack). Full round-trip push notification callbacks are planned for a future release.
+In direct mode, the response contains completed text content directly from Hermes.
 
 The caller's DID (from the JWT `iss` claim) is forwarded to Hermes in the webhook payload as `issuer_did`, so Hermes can identify which agent sent the task.
 
-### Configuring the webhook bridge
+### Configuring direct and delegated bridges
+
+#### Direct bridge variables
+
+| Variable | Description |
+|---|---|
+| `A2A_MODE` | `auto` (default), `direct`, or `delegated`. |
+| `HERMES_API_KEY` | Required for direct mode. Used as Bearer auth to Hermes OpenAI endpoint. |
+| `HERMES_URL` | Hermes OpenAI-compatible base URL. Default: `http://127.0.0.1:8642`. |
+| `HERMES_MODEL` | Model name for direct bridge requests. Default: `hermes-agent`. |
+| `HERMES_TIMEOUT` | Direct bridge timeout in seconds. Default: `120`. |
+| `A2A_PUBLIC_URL` | Optional URL used in attachment links. Defaults to service base URL. |
+| `A2A_FILE_SERVE_PATHS` | Optional comma-separated file roots allowed for `/files/{path}` serving. |
+
+#### Delegated webhook bridge
 
 The `/a2a` endpoint works by forwarding tasks to Hermes's internal webhook server over HMAC-authenticated HTTP. To enable it:
 
@@ -434,6 +463,13 @@ Each agent's DID and wallet address are logged at startup and available at `/.we
 
 | Variable | Description |
 |---|---|
+| `A2A_MODE` | `auto` (default), `direct`, or `delegated`. Controls routing behavior for `/a2a`. |
+| `HERMES_API_KEY` | Required for direct mode. Hermes OpenAI-compatible API key. |
+| `HERMES_URL` | Hermes OpenAI-compatible base URL. Defaults to `http://127.0.0.1:8642`. |
+| `HERMES_MODEL` | Model name for direct bridge requests. Defaults to `hermes-agent`. |
+| `HERMES_TIMEOUT` | Direct bridge timeout in seconds. Defaults to `120`. |
+| `A2A_PUBLIC_URL` | Optional public URL used for generated attachment links. |
+| `A2A_FILE_SERVE_PATHS` | Optional comma-separated list of file roots allowed for `/files/{path}` serving. |
 | `WEBHOOK_SECRET` | Required to enable the A2A bridge. HMAC key for Hermes webhook authentication. |
 | `WEBHOOK_ENABLED` | Set to `true` to start the Hermes webhook server. |
 | `WEBHOOK_PORT` | Hermes webhook server port. Defaults to `8644`. |
@@ -504,7 +540,7 @@ hermes pairing list
 5. Initializes Radius wallet if not already done (generates key, calls faucet).
 6. Copies all `skills/*.md` files to `${HERMES_HOME}/skills/` (overwrites on each boot).
 7. Copies skills with `published: true` frontmatter to `${HERMES_HOME}/skills/` in `name/SKILL.md` structure.
-8. Starts the Bun skills server in background (binds `PORT`).
+8. Starts the FastAPI agent server in background (binds `PORT`).
 9. Starts `hermes gateway` in foreground.
 
 ## Troubleshooting

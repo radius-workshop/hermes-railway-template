@@ -10,6 +10,19 @@ ENV_FILE="${HERMES_HOME}/.env"
 CONFIG_FILE="${HERMES_HOME}/config.yaml"
 
 mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/logs" "${HERMES_HOME}/sessions" "${HERMES_HOME}/cron" "${HERMES_HOME}/pairing" "${MESSAGING_CWD}"
+mkdir -p "${HOME}/.claude"
+
+# Write Claude Code settings — always overwrite to keep permissions fresh
+cat > "${HOME}/.claude/settings.json" <<'EOF'
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl * railway.app*)",
+      "Bash(curl *railway.app*)"
+    ]
+  }
+}
+EOF
 
 is_true() {
   case "${1:-}" in
@@ -124,10 +137,10 @@ EOF
 fi
 
 # === A2A: inject webhook route when WEBHOOK_SECRET is configured ===
+# Always overwrite on every deploy so the route config stays fresh.
 if [[ -n "${WEBHOOK_SECRET:-}" ]] && is_true "${WEBHOOK_ENABLED:-}"; then
-  if ! grep -q "a2a:" "$CONFIG_FILE" 2>/dev/null; then
-    echo "[bootstrap] Configuring A2A webhook route in config.yaml..."
-    python3 - <<'PYEOF'
+  echo "[bootstrap] Configuring A2A webhook route in config.yaml..."
+  python3 - <<'PYEOF'
 import yaml, os, sys
 cfg_file = os.environ['HERMES_HOME'] + '/config.yaml'
 secret = os.environ['WEBHOOK_SECRET']
@@ -136,25 +149,34 @@ try:
         cfg = yaml.safe_load(f) or {}
 except Exception:
     cfg = {}
-(cfg
-    .setdefault('platforms', {})
-    .setdefault('webhook', {})
-    .setdefault('extra', {})
-    .setdefault('routes', {})
-)['a2a'] = {
-    'events': ['*'],
+platforms = cfg.setdefault('platforms', {})
+webhook = platforms.setdefault('webhook', {})
+webhook['enabled'] = True
+extra = webhook.setdefault('extra', {})
+extra['secret'] = secret
+routes = extra.setdefault('routes', {})
+# Always overwrite the a2a route to keep it fresh
+routes['a2a'] = {
     'secret': secret,
-    'prompt': '{text}',
+    'prompt': (
+        'You have received an A2A message from agent {issuer_did}:\n\n'
+        '{text}\n\n'
+        'To reply, follow these steps exactly:\n'
+        '1. Call generate_a2a_token() to get your Bearer token. '
+        'NEVER write JWT signing code or pip install ecdsa — that always produces broken tokens.\n'
+        '2. Use the token to POST to {issuer_did_url}/a2a via curl or requests. '
+        'If your message text contains apostrophes or special characters, write the JSON payload '
+        'to a temp file and use curl -d @/tmp/payload.json instead of inline -d.\n'
+        '3. Continue the conversation — treat this as an ongoing dialogue, not a one-shot reply.'
+    ),
+    'deliver': 'telegram',
 }
 with open(cfg_file, 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
-print('[bootstrap] A2A webhook route added to config.yaml.')
+print('[bootstrap] A2A webhook route configured in config.yaml.')
 PYEOF
-    if [[ $? -ne 0 ]]; then
-      echo "[bootstrap] WARNING: Could not auto-configure A2A webhook route. Add it manually to config.yaml." >&2
-    fi
-  else
-    echo "[bootstrap] A2A webhook route already present in config.yaml."
+  if [[ $? -ne 0 ]]; then
+    echo "[bootstrap] WARNING: Could not auto-configure A2A webhook route. Add it manually to config.yaml." >&2
   fi
 fi
 
@@ -176,27 +198,23 @@ fi
 
 # === Radius: wallet setup ===
 RADIUS_WALLET_MARKER="${HERMES_HOME}/.radius/initialized"
-if command -v node >/dev/null 2>&1; then
-  if [[ ! -f "$RADIUS_WALLET_MARKER" ]]; then
-    echo "[bootstrap] Setting up Radius wallet..."
-    if node /app/scripts/radius/wallet-init.mjs; then
-      date -u +"%Y-%m-%dT%H:%M:%SZ" > "$RADIUS_WALLET_MARKER"
-      # Reload keys generated during init and append to .env for this boot
-      if [[ -f "$RADIUS_KEY_FILE" ]] && ! grep -q "^RADIUS_PRIVATE_KEY=" "$ENV_FILE" 2>/dev/null; then
-        echo "RADIUS_PRIVATE_KEY=$(cat "$RADIUS_KEY_FILE")" >> "$ENV_FILE"
-      fi
-      if [[ -f "$RADIUS_ADDR_FILE" ]] && ! grep -q "^RADIUS_WALLET_ADDRESS=" "$ENV_FILE" 2>/dev/null; then
-        echo "RADIUS_WALLET_ADDRESS=$(cat "$RADIUS_ADDR_FILE")" >> "$ENV_FILE"
-      fi
-      echo "[bootstrap] Radius wallet ready: $(cat "$RADIUS_ADDR_FILE" 2>/dev/null || echo 'unknown')"
-    else
-      echo "[bootstrap] WARNING: Radius wallet setup failed. Will retry on next boot." >&2
+if [[ ! -f "$RADIUS_WALLET_MARKER" ]]; then
+  echo "[bootstrap] Setting up Radius wallet..."
+  if python3 /app/scripts/radius/wallet_init.py; then
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$RADIUS_WALLET_MARKER"
+    # Reload keys generated during init and append to .env for this boot
+    if [[ -f "$RADIUS_KEY_FILE" ]] && ! grep -q "^RADIUS_PRIVATE_KEY=" "$ENV_FILE" 2>/dev/null; then
+      echo "RADIUS_PRIVATE_KEY=$(cat "$RADIUS_KEY_FILE")" >> "$ENV_FILE"
     fi
+    if [[ -f "$RADIUS_ADDR_FILE" ]] && ! grep -q "^RADIUS_WALLET_ADDRESS=" "$ENV_FILE" 2>/dev/null; then
+      echo "RADIUS_WALLET_ADDRESS=$(cat "$RADIUS_ADDR_FILE")" >> "$ENV_FILE"
+    fi
+    echo "[bootstrap] Radius wallet ready: $(cat "$RADIUS_ADDR_FILE" 2>/dev/null || echo 'unknown')"
   else
-    echo "[bootstrap] Radius wallet already initialized: ${RADIUS_WALLET_ADDRESS:-unknown}"
+    echo "[bootstrap] WARNING: Radius wallet setup failed. Will retry on next boot." >&2
   fi
 else
-  echo "[bootstrap] WARNING: Node.js not found, skipping Radius wallet setup." >&2
+  echo "[bootstrap] Radius wallet already initialized: ${RADIUS_WALLET_ADDRESS:-unknown}"
 fi
 
 # === ByteRover: configure memory provider (one-time) ===
@@ -235,6 +253,36 @@ else
   echo "[bootstrap] BYTEROVER_API_KEY not set and BYTEROVER_LOCAL not enabled — skipping ByteRover setup."
 fi
 
+# === gen-jwt plugin: ensure its toolset is enabled in config.yaml ===
+if ! python3 -c "
+import yaml, os, sys
+cfg_file = os.environ['HERMES_HOME'] + '/config.yaml'
+try:
+    cfg = yaml.safe_load(open(cfg_file)) or {}
+except Exception:
+    cfg = {}
+ts = cfg.get('toolsets', [])
+sys.exit(0 if ('gen-jwt' in ts or 'all' in ts) else 1)
+" 2>/dev/null; then
+  echo "[bootstrap] Adding gen-jwt to enabled toolsets in config.yaml..."
+  python3 - <<'PYEOF'
+import yaml, os
+cfg_file = os.environ['HERMES_HOME'] + '/config.yaml'
+try:
+    with open(cfg_file) as f:
+        cfg = yaml.safe_load(f) or {}
+except Exception:
+    cfg = {}
+toolsets = cfg.get('toolsets', [])
+if 'gen-jwt' not in toolsets and 'all' not in toolsets:
+    toolsets.append('gen-jwt')
+    cfg['toolsets'] = toolsets
+    with open(cfg_file, 'w') as f:
+        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+    print('[bootstrap] gen-jwt toolset enabled.')
+PYEOF
+fi
+
 # Install bundled skills into Hermes skills directory
 SKILLS_DIR="${HERMES_HOME}/skills"
 mkdir -p "$SKILLS_DIR"
@@ -242,6 +290,17 @@ for skill_file in /app/skills/*.md; do
   [[ -f "$skill_file" ]] || continue
   cp "$skill_file" "${SKILLS_DIR}/$(basename "$skill_file")"
   echo "[bootstrap] Installed skill: $(basename "$skill_file")"
+done
+
+# Install bundled plugins into Hermes plugins directory
+PLUGINS_DIR="${HERMES_HOME}/plugins"
+mkdir -p "$PLUGINS_DIR"
+for plugin_dir in /app/plugins/*/; do
+  [[ -d "$plugin_dir" ]] || continue
+  plugin_name="$(basename "$plugin_dir")"
+  rm -rf "${PLUGINS_DIR}/${plugin_name}"
+  cp -r "$plugin_dir" "${PLUGINS_DIR}/${plugin_name}"
+  echo "[bootstrap] Installed plugin: ${plugin_name}"
 done
 
 # Install remote Radius skills — refreshed on every boot, cached if unavailable
@@ -268,7 +327,7 @@ done
 
 # Populate .well-known skills directory — only skills with `published: true` in frontmatter
 # Sources: bundled skills only (remote skills are not published via well-known)
-WELL_KNOWN_SKILLS_DIR="${HERMES_HOME}/skills"
+WELL_KNOWN_SKILLS_DIR="${HERMES_HOME}/well-known-skills"
 mkdir -p "$WELL_KNOWN_SKILLS_DIR"
 for skill_file in /app/skills/*.md; do
   [[ -f "$skill_file" ]] || continue
@@ -300,7 +359,46 @@ for key in \
 done
 
 echo "[bootstrap] Starting agent server..."
-bun /app/scripts/agent-server/index.ts &
+python3 /app/scripts/agent_server/main.py &
+AGENT_PID=$!
+
+_wait_for_agent_server() {
+  local port="${PORT:-3000}"
+  local max_attempts=15
+  local attempt=0
+
+  echo "[bootstrap] Waiting for agent server on port ${port}..."
+  while [[ $attempt -lt $max_attempts ]]; do
+    attempt=$((attempt + 1))
+
+    if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+      echo "[bootstrap] WARNING: Agent server process (PID ${AGENT_PID}) exited unexpectedly." >&2
+      return 1
+    fi
+
+    local token
+    token=$(python3 /app/scripts/agent_server/gen_jwt.py 2>/dev/null \
+      | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('token',''))" 2>/dev/null)
+
+    if [[ -n "$token" ]]; then
+      local status
+      status=$(curl -sf -o /dev/null -w "%{http_code}" \
+        -H "Authorization: Bearer ${token}" \
+        "http://localhost:${port}/health" 2>/dev/null)
+      if [[ "$status" == "200" ]]; then
+        echo "[bootstrap] Agent server ready (attempt ${attempt})."
+        return 0
+      fi
+    fi
+
+    sleep 2
+  done
+
+  echo "[bootstrap] WARNING: Agent server did not become ready after $((max_attempts * 2))s — continuing anyway." >&2
+  return 1
+}
+
+_wait_for_agent_server || true
 
 echo "[bootstrap] Starting Hermes gateway..."
 exec hermes gateway

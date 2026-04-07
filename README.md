@@ -265,7 +265,9 @@ Skills without `published: true` are installed into Hermes for the agent's own u
 
 ## Agent-to-agent (A2A) communication
 
-This template implements the [A2A protocol](https://github.com/a2aproject/A2A) so other agents can discover and send tasks to your Hermes agent over HTTP, with cryptographically verifiable identity on both sides.
+This template implements the [A2A protocol](https://github.com/a2aproject/A2A), making your Hermes agent a first-class participant in a network of autonomous agents. Any other A2A-compatible agent can discover yours, verify its identity, and delegate tasks to it — without any pre-shared secrets or manual coordination.
+
+Combined with the built-in Radius wallet, this unlocks **agent-to-agent payments**: agents can pay each other for work, request tokens in exchange for services, or settle tasks on-chain as part of a larger workflow. Every agent in this network has a persistent cryptographic identity tied to an Ethereum-compatible wallet, so value and trust travel together.
 
 ### How identity works
 
@@ -399,6 +401,28 @@ This tells Hermes to accept webhook POSTs at `/webhooks/a2a` and use the `text` 
 
 Once configured, `POST /a2a` → Hermes is live. The agent card at `/.well-known/agent-card.json` will automatically advertise `capabilities.push_notifications: true`.
 
+### Agent-to-agent payments
+
+Because every Hermes agent in this template has both a `did:web` identity and a Radius wallet derived from the same key, agents can pay each other for work as part of any A2A conversation.
+
+**How it works:**
+
+1. Agent A calls Agent B via `POST /a2a` with a task (e.g. "run this analysis and invoice me")
+2. Agent B completes the task and responds with its wallet address and a requested amount
+3. Agent A uses its built-in wallet skill to send SBC tokens to Agent B on-chain
+4. Either agent can verify settlement by checking the on-chain balance
+
+No payment processor, no API keys for billing, no off-chain accounting — just two agents with wallets settling directly on the Radius testnet.
+
+To connect two agents for both task delegation and payments:
+
+| Agent | Required env vars |
+|---|---|
+| Calling agent (A) | `A2A_PEER_URL=https://<agent-b-domain>`, `TRUSTED_DIDS=did:web:<agent-b-domain>` |
+| Receiving agent (B) | `WEBHOOK_ENABLED=true`, `WEBHOOK_SECRET=<shared-secret>`, `TRUSTED_DIDS=did:web:<agent-a-domain>` |
+
+Each agent's DID and wallet address are logged at startup and available at `/.well-known/did.json` and `/.well-known/agent-registration.json`.
+
 ### A2A variables
 
 | Variable | Description |
@@ -408,6 +432,8 @@ Once configured, `POST /a2a` → Hermes is live. The agent card at `/.well-known
 | `WEBHOOK_PORT` | Hermes webhook server port. Defaults to `8644`. |
 | `JWT_API_KEY` | Enables `POST /token`. Callers present this key to receive a signed JWT. |
 | `TRUSTED_DIDS` | Comma-separated DID allowlist. When set, only these DIDs (plus self-issued tokens) can call gated endpoints. Leave unset to accept any valid DID JWT. |
+| `A2A_PEER_URL` | URL of a pre-configured peer agent. Used by the `a2a-comms` skill as the default call target. |
+| `A2A_PEER_API_KEY` | API key for the peer's `/token` endpoint, if they require one. |
 
 ---
 

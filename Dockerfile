@@ -17,12 +17,15 @@ ENV PATH="/opt/venv/bin:${PATH}"
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -e "/opt/hermes-agent[messaging,cron,cli,pty]"
 
-
-FROM oven/bun:1.3-slim AS bun-builder
-
-WORKDIR /app/scripts/agent-server
-COPY scripts/agent-server/package.json ./
-RUN bun install --frozen-lockfile 2>/dev/null || bun install
+# Python dependencies for agent_server and radius scripts
+RUN pip install --no-cache-dir \
+  "fastapi>=0.104.0" \
+  "uvicorn[standard]>=0.24.0" \
+  "pyjwt[crypto]>=2.8.0" \
+  "cryptography>=41.0.0" \
+  "httpx>=0.25.0" \
+  "web3>=6.0.0" \
+  "requests>=2.28.0"
 
 
 FROM python:3.11-slim
@@ -32,6 +35,7 @@ RUN apt-get update \
     ca-certificates \
     curl \
     git \
+    jq \
     tini \
     nodejs \
     npm \
@@ -47,26 +51,24 @@ ENV PATH="/root/.local/bin:/opt/venv/bin:${PATH}" \
 
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /opt/hermes-agent /opt/hermes-agent
-COPY --from=oven/bun:1.3-slim /usr/local/bin/bun /usr/local/bin/bun
 
 WORKDIR /app
 COPY scripts/entrypoint.sh /app/scripts/entrypoint.sh
 RUN sed -i 's/\r$//' /app/scripts/entrypoint.sh && chmod +x /app/scripts/entrypoint.sh
 
 COPY scripts/radius /app/scripts/radius
-RUN cd /app/scripts/radius && npm install --omit=dev --no-fund --no-audit
 
-# Install and build linear-claude-skill
+# Install and build linear-claude-skill (still Node.js)
 RUN git clone --depth 1 https://github.com/radius-workshop/linear-claude-skill /app/scripts/linear-skill \
   && cd /app/scripts/linear-skill \
   && npm install --no-fund --no-audit \
   && npm run build \
   && npm prune --omit=dev
 
-COPY scripts/agent-server /app/scripts/agent-server
-COPY --from=bun-builder /app/scripts/agent-server/node_modules /app/scripts/agent-server/node_modules
+COPY scripts/agent_server /app/scripts/agent_server
 
 COPY skills /app/skills
+COPY plugins /app/plugins
 
 ENTRYPOINT ["tini", "--"]
 CMD ["/app/scripts/entrypoint.sh"]

@@ -37,7 +37,7 @@ The wallet address is stored in the `RADIUS_WALLET_ADDRESS` environment variable
 ### Check balance
 
 ```bash
-node /app/scripts/radius/balance.mjs
+python3 /app/scripts/radius/balance.py
 ```
 
 Output is JSON: `{ address, rusd, sbc }` — print address and balances clearly to the user.
@@ -45,19 +45,19 @@ Output is JSON: `{ address, rusd, sbc }` — print address and balances clearly 
 ### Check balance of another address
 
 ```bash
-node /app/scripts/radius/balance.mjs 0xADDRESS
+python3 /app/scripts/radius/balance.py 0xADDRESS
 ```
 
 ### Send SBC to an address
 
 ```bash
-node /app/scripts/radius/send.mjs 0xRECIPIENT AMOUNT
+python3 /app/scripts/radius/send.py 0xRECIPIENT AMOUNT
 ```
 
 Example: send 10 SBC to 0xabc...
 
 ```bash
-node /app/scripts/radius/send.mjs 0xabc123... 10
+python3 /app/scripts/radius/send.py 0xabc123... 10
 ```
 
 Output is JSON with `tx_hash` and `status`. Share the tx hash and the explorer link with the user:
@@ -65,16 +65,16 @@ Output is JSON with `tx_hash` and `status`. Share the tx hash and the explorer l
 
 ## Responding to user requests
 
-1. **"What is my wallet?" / "what is my radius wallet?" / "show wallet"** — print `RADIUS_WALLET_ADDRESS` from env, or run `balance.mjs` and show the address field.
+1. **"What is my wallet?" / "what is my radius wallet?" / "show wallet"** — print `RADIUS_WALLET_ADDRESS` from env, or run `balance.py` and show the address field.
 
-2. **"Check balance" / "get my wallet balance" / "how much SBC do I have?"** — run `balance.mjs` and report RUSD and SBC balances.
+2. **"Check balance" / "get my wallet balance" / "how much SBC do I have?"** — run `balance.py` and report RUSD and SBC balances.
 
-3. **"Send X SBC to 0x..."** — confirm the recipient and amount with the user first, then run `send.mjs`. Share the tx hash and explorer link.
+3. **"Send X SBC to 0x..."** — confirm the recipient and amount with the user first, then run `send.py`. Share the tx hash and explorer link.
 
 4. **"Fund wallet" / "get testnet tokens"** — explain that funding happens automatically on first boot. If needed, the user can redeploy to trigger another faucet request, or use the Radius testnet faucet directly at https://testnet.radiustech.xyz.
 
 ## Error handling
 
-- If `balance.mjs` fails with "No wallet configured", the wallet has not been initialized yet. Tell the user to check container logs.
-- If `send.mjs` reports "Insufficient SBC balance", tell the user how much they have and that they need more testnet funds.
+- If `balance.py` fails with "No wallet configured", the wallet has not been initialized yet. Tell the user to check container logs.
+- If `send.py` reports "Insufficient SBC balance", tell the user how much they have and that they need more testnet funds.
 - Always show the full tx hash and explorer link on successful sends.

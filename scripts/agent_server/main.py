@@ -394,16 +394,17 @@ async def handle_a2a(request: Request, auth: dict = Depends(jwt_auth_dep)):
             try:
                 async for event in _a2a_bridge.stream_events(rpc_id, message):
                     yield f"data: {json.dumps(event)}\n\n"
-            except Exception as e:
-                err = {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32603, "message": str(e)}}
+            except Exception:
+                logger.exception("Direct A2A streaming failure")
+                err = {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32603, "message": "Internal processing error"}}
                 yield f"data: {json.dumps(err)}\n\n"
 
         return StreamingResponse(_sse(), media_type="text/event-stream")
-    except ValueError as e:
-        return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32602, "message": str(e)}})
-    except Exception as e:
+    except ValueError:
+        return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32602, "message": "Invalid params"}})
+    except Exception:
         logger.exception("Direct A2A failure")
-        return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32603, "message": str(e)}})
+        return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32603, "message": "Internal processing error"}})
 
 
 @app.get("/files/{file_path:path}")

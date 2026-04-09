@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from a2a_bridge import A2ABridge
 from auth import get_did, get_did_document, issue_token, jwt_auth_dep, setup_auth
 from hermes_client import HermesClient
+from url_utils import get_base_url
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agent-server")
@@ -44,19 +45,11 @@ _start_time = time.time()
 SKILLS_ROOT = os.environ.get("SKILLS_ROOT", "/data/.hermes/well-known-skills")
 
 
-def _get_base_url() -> str:
-    if os.environ.get("PUBLIC_URL"):
-        return os.environ["PUBLIC_URL"]
-    if os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
-        return f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}"
-    return f"http://localhost:{os.environ.get('PORT', '3000')}"
-
-
-BASE_URL = _get_base_url()
+BASE_URL = get_base_url()
 A2A_PUBLIC_URL = os.environ.get("A2A_PUBLIC_URL", BASE_URL)
 A2A_MODE = os.environ.get("A2A_MODE", "auto").lower()
 HERMES_URL = os.environ.get("HERMES_URL", "http://127.0.0.1:8642")
-HERMES_MODEL = os.environ.get("HERMES_MODEL", "hermes-agent")
+A2A_BRIDGE_MODEL = os.environ.get("A2A_BRIDGE_MODEL", "hermes-agent")
 HERMES_TIMEOUT = float(os.environ.get("HERMES_TIMEOUT", "120"))
 
 _hermes_client: Optional[HermesClient] = None
@@ -198,7 +191,7 @@ async def lifespan(app: FastAPI):
         _hermes_client = HermesClient(
             base_url=HERMES_URL,
             api_key=os.environ["HERMES_API_KEY"],
-            model=HERMES_MODEL,
+            model=A2A_BRIDGE_MODEL,
             timeout=HERMES_TIMEOUT,
         )
         _a2a_bridge = A2ABridge(_hermes_client, _parse_allowed_roots(), A2A_PUBLIC_URL)
@@ -291,7 +284,7 @@ async def agent_registration():
 async def agent_card():
     agent_name = os.environ.get("AGENT_NAME", "Hermes Agent")
     did = get_did()
-    webhook_enabled = os.environ.get("WEBHOOK_ENABLED", "").lower() == "true"
+    webhook_enabled = bool(os.environ.get("WEBHOOK_SECRET"))
     skills_index = json.loads(_get_index())
     mode = A2A_MODE
     direct = _direct_available()
@@ -420,7 +413,7 @@ async def handle_a2a(request: Request, auth: dict = Depends(jwt_auth_dep)):
 
     if not _a2a_bridge:
         return _rpc_error_response(
-            rpc_id, InternalError(message="Direct A2A bridge is unavailable; set HERMES_API_KEY"), status_code=503
+            rpc_id, InternalError(message="Direct A2A bridge is unavailable"), status_code=503
         )
 
     try:
@@ -468,7 +461,7 @@ async def serve_file(file_path: str, auth: dict = Depends(jwt_auth_dep)):
 
 @app.post("/token")
 async def token_exchange(request: Request):
-    api_key = os.environ.get("JWT_API_KEY")
+    api_key = os.environ.get("JWT_EXCHANGE_KEY")
     if not api_key:
         return JSONResponse({"error": "Not found"}, status_code=404)
     if request.headers.get("X-Api-Key") != api_key:

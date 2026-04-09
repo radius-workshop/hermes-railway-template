@@ -103,6 +103,19 @@ if [[ -z "${RADIUS_WALLET_ADDRESS:-}" && -f "$RADIUS_ADDR_FILE" ]]; then
   export RADIUS_WALLET_ADDRESS="$(cat "$RADIUS_ADDR_FILE")"
 fi
 
+# === Agent server: auto-generate HERMES_API_KEY if not provided ===
+HERMES_API_KEY_FILE="${HERMES_HOME}/.hermes_api_key"
+if [[ -z "${HERMES_API_KEY:-}" && -f "$HERMES_API_KEY_FILE" ]]; then
+  export HERMES_API_KEY="$(cat "$HERMES_API_KEY_FILE")"
+  echo "[bootstrap] Loaded stored Hermes API key."
+fi
+if [[ -z "${HERMES_API_KEY:-}" ]]; then
+  export HERMES_API_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+  echo "$HERMES_API_KEY" > "$HERMES_API_KEY_FILE"
+  chmod 600 "$HERMES_API_KEY_FILE"
+  echo "[bootstrap] Generated new Hermes API key."
+fi
+
 echo "[bootstrap] Writing runtime env to ${ENV_FILE}"
 {
   echo "# Managed by entrypoint.sh"
@@ -118,11 +131,11 @@ for key in \
   GATEWAY_ALLOW_ALL_USERS \
   FIRECRAWL_API_KEY NOUS_API_KEY BROWSERBASE_API_KEY BROWSERBASE_PROJECT_ID BROWSERBASE_PROXIES BROWSERBASE_ADVANCED_STEALTH BROWSER_SESSION_TIMEOUT BROWSER_INACTIVITY_TIMEOUT FAL_KEY ELEVENLABS_API_KEY VOICE_TOOLS_OPENAI_KEY \
   TINKER_API_KEY WANDB_API_KEY RL_API_URL GITHUB_TOKEN BYTEROVER_API_KEY BYTEROVER_LOCAL LINEAR_API_KEY LINEAR_TEAM_ID LINEAR_PROJECT_ID \
-  TERMINAL_ENV TERMINAL_BACKEND TERMINAL_DOCKER_IMAGE TERMINAL_SINGULARITY_IMAGE TERMINAL_MODAL_IMAGE TERMINAL_CWD TERMINAL_TIMEOUT TERMINAL_LIFETIME_SECONDS TERMINAL_CONTAINER_CPU TERMINAL_CONTAINER_MEMORY TERMINAL_CONTAINER_DISK TERMINAL_CONTAINER_PERSISTENT TERMINAL_SANDBOX_DIR TERMINAL_SSH_HOST TERMINAL_SSH_USER TERMINAL_SSH_PORT TERMINAL_SSH_KEY SUDO_PASSWORD \
+  TERMINAL_BACKEND TERMINAL_DOCKER_IMAGE TERMINAL_SINGULARITY_IMAGE TERMINAL_MODAL_IMAGE TERMINAL_CWD TERMINAL_TIMEOUT TERMINAL_LIFETIME_SECONDS TERMINAL_CONTAINER_CPU TERMINAL_CONTAINER_MEMORY TERMINAL_CONTAINER_DISK TERMINAL_CONTAINER_PERSISTENT TERMINAL_SANDBOX_DIR TERMINAL_SSH_HOST TERMINAL_SSH_USER TERMINAL_SSH_PORT TERMINAL_SSH_KEY SUDO_PASSWORD \
   WEB_TOOLS_DEBUG VISION_TOOLS_DEBUG MOA_TOOLS_DEBUG IMAGE_TOOLS_DEBUG CONTEXT_COMPRESSION_ENABLED CONTEXT_COMPRESSION_THRESHOLD CONTEXT_COMPRESSION_MODEL HERMES_MAX_ITERATIONS HERMES_TOOL_PROGRESS HERMES_TOOL_PROGRESS_MODE \
   RADIUS_PRIVATE_KEY RADIUS_WALLET_ADDRESS RADIUS_NETWORK RADIUS_AUTO_FUND \
-  WEBHOOK_ENABLED WEBHOOK_PORT WEBHOOK_SECRET \
-  HERMES_API_KEY HERMES_URL HERMES_MODEL HERMES_TIMEOUT A2A_MODE A2A_PUBLIC_URL A2A_FILE_SERVE_PATHS
+  WEBHOOK_PORT WEBHOOK_SECRET \
+  HERMES_API_KEY HERMES_URL A2A_BRIDGE_MODEL HERMES_TIMEOUT A2A_MODE A2A_PUBLIC_URL A2A_FILE_SERVE_PATHS
 do
   append_if_set "$key"
 done
@@ -130,9 +143,9 @@ done
 if [[ ! -f "$CONFIG_FILE" ]]; then
   echo "[bootstrap] Creating ${CONFIG_FILE}"
   cat > "$CONFIG_FILE" <<EOF
-model: ${LLM_MODEL:-anthropic/claude-3.5-haiku}
+model: ${LLM_MODEL:-openai/gpt-5.4-nano}
 terminal:
-  backend: ${TERMINAL_ENV:-${TERMINAL_BACKEND:-local}}
+  backend: ${TERMINAL_BACKEND:-local}
   cwd: ${TERMINAL_CWD:-/data/workspace}
   timeout: ${TERMINAL_TIMEOUT:-180}
 compression:
@@ -143,7 +156,7 @@ fi
 
 # === A2A: inject webhook route when WEBHOOK_SECRET is configured ===
 # Always overwrite on every deploy so the route config stays fresh.
-if [[ -n "${WEBHOOK_SECRET:-}" ]] && is_true "${WEBHOOK_ENABLED:-}"; then
+if [[ -n "${WEBHOOK_SECRET:-}" ]]; then
   echo "[bootstrap] Configuring A2A webhook route in config.yaml..."
   python3 - <<'PYEOF'
 import yaml, os, sys
@@ -173,8 +186,7 @@ routes['a2a'] = {
         'If your message text contains apostrophes or special characters, write the JSON payload '
         'to a temp file and use curl -d @/tmp/payload.json instead of inline -d.\n'
         '3. Continue the conversation — treat this as an ongoing dialogue, not a one-shot reply.'
-    ),
-    'deliver': 'telegram',
+    )
 }
 with open(cfg_file, 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
@@ -207,12 +219,21 @@ if [[ ! -f "$RADIUS_WALLET_MARKER" ]]; then
   echo "[bootstrap] Setting up Radius wallet..."
   if python3 /app/scripts/radius/wallet_init.py; then
     date -u +"%Y-%m-%dT%H:%M:%SZ" > "$RADIUS_WALLET_MARKER"
-    # Reload keys generated during init and append to .env for this boot
-    if [[ -f "$RADIUS_KEY_FILE" ]] && ! grep -q "^RADIUS_PRIVATE_KEY=" "$ENV_FILE" 2>/dev/null; then
-      echo "RADIUS_PRIVATE_KEY=$(cat "$RADIUS_KEY_FILE")" >> "$ENV_FILE"
+    # Reload keys generated during init into the current process environment so
+    # the agent server and JWT auth use the persistent wallet immediately.
+    if [[ -f "$RADIUS_KEY_FILE" ]]; then
+      export RADIUS_PRIVATE_KEY="$(cat "$RADIUS_KEY_FILE")"
     fi
-    if [[ -f "$RADIUS_ADDR_FILE" ]] && ! grep -q "^RADIUS_WALLET_ADDRESS=" "$ENV_FILE" 2>/dev/null; then
-      echo "RADIUS_WALLET_ADDRESS=$(cat "$RADIUS_ADDR_FILE")" >> "$ENV_FILE"
+    if [[ -f "$RADIUS_ADDR_FILE" ]]; then
+      export RADIUS_WALLET_ADDRESS="$(cat "$RADIUS_ADDR_FILE")"
+    fi
+
+    # Persist generated values to .env for downstream tools.
+    if [[ -n "${RADIUS_PRIVATE_KEY:-}" ]] && ! grep -q "^RADIUS_PRIVATE_KEY=" "$ENV_FILE" 2>/dev/null; then
+      echo "RADIUS_PRIVATE_KEY=${RADIUS_PRIVATE_KEY}" >> "$ENV_FILE"
+    fi
+    if [[ -n "${RADIUS_WALLET_ADDRESS:-}" ]] && ! grep -q "^RADIUS_WALLET_ADDRESS=" "$ENV_FILE" 2>/dev/null; then
+      echo "RADIUS_WALLET_ADDRESS=${RADIUS_WALLET_ADDRESS}" >> "$ENV_FILE"
     fi
     echo "[bootstrap] Radius wallet ready: $(cat "$RADIUS_ADDR_FILE" 2>/dev/null || echo 'unknown')"
   else
@@ -258,7 +279,7 @@ else
   echo "[bootstrap] BYTEROVER_API_KEY not set and BYTEROVER_LOCAL not enabled — skipping ByteRover setup."
 fi
 
-# === gen-jwt plugin: ensure its toolset is enabled in config.yaml ===
+# === bundled plugins: ensure their toolsets are enabled in config.yaml ===
 if ! python3 -c "
 import yaml, os, sys
 cfg_file = os.environ['HERMES_HOME'] + '/config.yaml'
@@ -267,9 +288,10 @@ try:
 except Exception:
     cfg = {}
 ts = cfg.get('toolsets', [])
-sys.exit(0 if ('gen-jwt' in ts or 'all' in ts) else 1)
+required = {'gen-jwt', 'radius-cast'}
+sys.exit(0 if ('all' in ts or required.issubset(set(ts))) else 1)
 " 2>/dev/null; then
-  echo "[bootstrap] Adding gen-jwt to enabled toolsets in config.yaml..."
+  echo "[bootstrap] Adding bundled plugin toolsets to enabled toolsets in config.yaml..."
   python3 - <<'PYEOF'
 import yaml, os
 cfg_file = os.environ['HERMES_HOME'] + '/config.yaml'
@@ -279,12 +301,18 @@ try:
 except Exception:
     cfg = {}
 toolsets = cfg.get('toolsets', [])
-if 'gen-jwt' not in toolsets and 'all' not in toolsets:
-    toolsets.append('gen-jwt')
+required_toolsets = ['gen-jwt', 'radius-cast']
+if 'all' not in toolsets:
+    changed = False
+    for toolset in required_toolsets:
+        if toolset not in toolsets:
+            toolsets.append(toolset)
+            changed = True
     cfg['toolsets'] = toolsets
-    with open(cfg_file, 'w') as f:
-        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
-    print('[bootstrap] gen-jwt toolset enabled.')
+    if changed:
+        with open(cfg_file, 'w') as f:
+            yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True)
+        print('[bootstrap] Bundled plugin toolsets enabled.')
 PYEOF
 fi
 
@@ -297,6 +325,24 @@ for skill_file in /app/skills/*.md; do
   echo "[bootstrap] Installed skill: $(basename "$skill_file")"
 done
 
+# Install vendored Radius marketplace skills while preserving their upstream
+# directory structure. Also expose top-level .md aliases for tools that expect
+# flat skill files.
+VENDORED_SKILLS_ROOT="/app/vendor/radius-skills/skills"
+if [[ -d "$VENDORED_SKILLS_ROOT" ]]; then
+  for skill_dir in "$VENDORED_SKILLS_ROOT"/*; do
+    [[ -d "$skill_dir" ]] || continue
+    skill_name="$(basename "$skill_dir")"
+    target_dir="${SKILLS_DIR}/${skill_name}"
+    rm -rf "$target_dir"
+    cp -r "$skill_dir" "$target_dir"
+    if [[ -f "${target_dir}/SKILL.md" ]]; then
+      cp "${target_dir}/SKILL.md" "${SKILLS_DIR}/${skill_name}.md"
+    fi
+    echo "[bootstrap] Installed vendored skill: ${skill_name}"
+  done
+fi
+
 # Install bundled plugins into Hermes plugins directory
 PLUGINS_DIR="${HERMES_HOME}/plugins"
 mkdir -p "$PLUGINS_DIR"
@@ -308,30 +354,38 @@ for plugin_dir in /app/plugins/*/; do
   echo "[bootstrap] Installed plugin: ${plugin_name}"
 done
 
-# Install remote Radius skills — refreshed on every boot, cached if unavailable
-declare -A REMOTE_SKILLS=(
-  [radius-dev]="https://docs.radiustech.xyz/skills/radius-dev.md"
-  [dripping-faucet]="https://docs.radiustech.xyz/skills/dripping-faucet.md"
-)
-for skill_name in "${!REMOTE_SKILLS[@]}"; do
-  skill_url="${REMOTE_SKILLS[$skill_name]}"
-  skill_path="${SKILLS_DIR}/${skill_name}.md"
-  tmp_path="${skill_path}.tmp"
-  if curl -fsSL --max-time 15 -o "$tmp_path" "$skill_url" 2>/dev/null; then
-    mv "$tmp_path" "$skill_path"
-    echo "[bootstrap] Installed remote skill: ${skill_name}"
-  else
-    rm -f "$tmp_path"
-    if [[ -f "$skill_path" ]]; then
-      echo "[bootstrap] WARNING: Could not refresh remote skill ${skill_name} — using cached version." >&2
-    else
-      echo "[bootstrap] WARNING: Could not download remote skill ${skill_name}." >&2
-    fi
+# Seed the messaging workspace so gateway sessions discover bundled project context
+# from MESSAGING_CWD immediately.
+link_into_workspace() {
+  local src="$1"
+  local dest="$2"
+  local force="${3:-false}"
+
+  if [[ ! -e "$src" ]]; then
+    return 0
   fi
-done
+
+  if [[ "$force" == "true" ]]; then
+    ln -sfn "$src" "$dest"
+    echo "[bootstrap] Linked workspace asset: $(basename "$dest")"
+  elif [[ -L "$dest" || ! -e "$dest" ]]; then
+    ln -sfn "$src" "$dest"
+    echo "[bootstrap] Linked workspace asset: $(basename "$dest")"
+  else
+    echo "[bootstrap] Keeping existing workspace asset: $(basename "$dest")" >&2
+  fi
+}
+
+link_into_workspace /app/HERMES.md "${MESSAGING_CWD}/HERMES.md" true
+link_into_workspace /app/HERMES.md "${MESSAGING_CWD}/.hermes.md" true
+link_into_workspace /app/AGENTS.md "${MESSAGING_CWD}/AGENTS.md" true
+link_into_workspace /app/README.md "${MESSAGING_CWD}/README.md"
+link_into_workspace "$SKILLS_DIR" "${MESSAGING_CWD}/skills"
+link_into_workspace "$PLUGINS_DIR" "${MESSAGING_CWD}/plugins"
+link_into_workspace /app/scripts "${MESSAGING_CWD}/scripts"
 
 # Populate .well-known skills directory — only skills with `published: true` in frontmatter
-# Sources: bundled skills only (remote skills are not published via well-known)
+# Sources: bundled flat skills and vendored directory skills
 WELL_KNOWN_SKILLS_DIR="${HERMES_HOME}/well-known-skills"
 mkdir -p "$WELL_KNOWN_SKILLS_DIR"
 for skill_file in /app/skills/*.md; do
@@ -342,6 +396,18 @@ for skill_file in /app/skills/*.md; do
   cp "$skill_file" "${WELL_KNOWN_SKILLS_DIR}/${skill_name}/SKILL.md"
   echo "[bootstrap] Installed well-known skill: ${skill_name}"
 done
+if [[ -d "$VENDORED_SKILLS_ROOT" ]]; then
+  for skill_dir in "$VENDORED_SKILLS_ROOT"/*; do
+    [[ -d "$skill_dir" ]] || continue
+    skill_name="$(basename "$skill_dir")"
+    skill_file="${skill_dir}/SKILL.md"
+    [[ -f "$skill_file" ]] || continue
+    grep -q "^published: true" "$skill_file" || continue
+    mkdir -p "${WELL_KNOWN_SKILLS_DIR}/${skill_name}"
+    cp "$skill_file" "${WELL_KNOWN_SKILLS_DIR}/${skill_name}/SKILL.md"
+    echo "[bootstrap] Installed vendored well-known skill: ${skill_name}"
+  done
+fi
 
 if [[ -z "${TELEGRAM_ALLOWED_USERS:-}${DISCORD_ALLOWED_USERS:-}${SLACK_ALLOWED_USERS:-}" ]]; then
   if ! is_true "${GATEWAY_ALLOW_ALL_USERS:-}" && ! is_true "${TELEGRAM_ALLOW_ALL_USERS:-}" && ! is_true "${DISCORD_ALLOW_ALL_USERS:-}" && ! is_true "${SLACK_ALLOW_ALL_USERS:-}"; then
@@ -386,12 +452,14 @@ _wait_for_agent_server() {
       | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('token',''))" 2>/dev/null)
 
     if [[ -n "$token" ]]; then
-      local status
-      status=$(curl -sf -o /dev/null -w "%{http_code}" \
+      local response status
+      response=$(curl -sf -w "\n%{http_code}" \
         -H "Authorization: Bearer ${token}" \
         "http://localhost:${port}/health" 2>/dev/null)
+      status="${response##*$'\n'}"
+      local body="${response%$'\n'*}"
       if [[ "$status" == "200" ]]; then
-        echo "[bootstrap] Agent server ready (attempt ${attempt})."
+        echo "[bootstrap] Agent server ready (attempt ${attempt}): ${body}"
         return 0
       fi
     fi

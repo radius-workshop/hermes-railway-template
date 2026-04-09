@@ -1,0 +1,8 @@
+name: radius-cast
+version: "1.0.0"
+description: "Radius wallet tools backed by Foundry cast with Radius-specific defaults and script fallback"
+provides_tools:
+  - radius_wallet_address
+  - radius_balance
+  - radius_send_sbc
+  - radius_tx_status

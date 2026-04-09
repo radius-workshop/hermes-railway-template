@@ -24,6 +24,39 @@ This template is worker-only: setup and configuration are done through Railway V
 3. On future boots, the same persisted state is reused.
 4. Container starts the Python/FastAPI agent server and `hermes gateway` in parallel.
 
+## Quick start (deploy from CLI)
+
+If you're deploying manually with the Railway CLI:
+
+```bash
+# 1. Create a Railway project and add a volume mounted at /data
+# 2. Link this repo to the project
+railway link
+
+# 3. Set required env vars (at minimum: a provider + a platform)
+railway variables --set ANTHROPIC_API_KEY=sk-ant-...
+railway variables --set TELEGRAM_BOT_TOKEN=123456:ABC...
+
+# 4. Run the pre-deploy check, then deploy
+./deploy.sh
+```
+
+`deploy.sh` validates that the required env vars are set in your linked Railway project before uploading anything, so you get a clear error locally instead of a crash loop in production.
+
+If you want a full clean slate, run:
+
+```bash
+./deploy.sh --reset-state
+```
+
+That clears the persisted Railway volume paths used by Hermes before deploying:
+
+- `/data/.hermes`
+- `/data/workspace`
+- `/data/.claude`
+
+This resets agent memory, sessions, pairing state, ByteRover state, workspace files, and the persisted Radius wallet.
+
 ## Railway deploy instructions
 
 In Railway Template Composer:
@@ -37,7 +70,7 @@ Template defaults (already included in `railway.toml`):
 - `HERMES_HOME=/data/.hermes`
 - `HOME=/data`
 - `MESSAGING_CWD=/data/workspace`
-- `LLM_MODEL=anthropic/claude-3.5-haiku`
+- `LLM_MODEL=openai/gpt-5.4-nano`
 
 ## Important: how to set variables in Railway
 
@@ -137,10 +170,10 @@ Without this, Hermes auto-selects and may not pick the one you expect.
 ### Model override
 
 ```
-LLM_MODEL=anthropic/claude-3.5-haiku
+LLM_MODEL=openai/gpt-5.4-nano
 ```
 
-Use any model ID supported by your provider. OpenRouter model IDs look like `anthropic/claude-3.5-haiku` or `openai/gpt-4o`.
+Use any model ID supported by your provider. OpenRouter model IDs look like `openai/gpt-5.4-nano` or `openai/gpt-4o`.
 
 ## Radius wallet
 
@@ -493,7 +526,30 @@ Any `.md` file you place in the `skills/` directory of this repo will be copied 
 2. Write instructions in plain Markdown — what the agent should know, how to behave, what commands to run.
 3. Redeploy. The skill will be installed on next boot.
 
-The `radius-wallet.md` skill is already included and tells the agent how to use the wallet scripts.
+The `radius-wallet.md` skill is already included and tells the agent to prefer the bundled Radius wallet tools, with script fallback where needed.
+
+Radius-maintained marketplace skills are also vendored from `https://github.com/radiustechsystems/skills` at image build time. They are installed into `${HERMES_HOME}/skills/` with their upstream directory structure preserved, and the template also creates flat `.md` aliases for compatibility with agents that expect top-level skill files.
+
+The template also includes an opinionated ByteRover memory skill and project instructions. When ByteRover is enabled, the intended usage is:
+
+- organize memory by session date
+- save only top-level, durable topics
+- track wallet addresses, descriptions, and important transactions as structured long-term memory
+
+### Context files and cross-agent compatibility
+
+Hermes supports repo context files. Per the Hermes docs, project context is loaded by priority from `.hermes.md` / `HERMES.md`, then `AGENTS.md`, then `CLAUDE.md`, then `.cursorrules`.
+
+This template ships both:
+
+- `HERMES.md` for Hermes-native project context
+- `AGENTS.md` for Codex/Claude-style agents that look for `AGENTS.md`
+
+That gives you the same core instructions across Hermes and non-Hermes coding agents while keeping `HERMES.md` as the primary Hermes context file.
+
+At runtime, gateway sessions start in `MESSAGING_CWD` (`/data/workspace` by default), not `/app`. To make the bundled project context discoverable immediately, the entrypoint links `HERMES.md`, `.hermes.md`, `AGENTS.md`, `README.md`, `skills/`, `plugins/`, and `scripts/` into the workspace root on boot.
+
+`HERMES.md`, `.hermes.md`, and `AGENTS.md` are template-owned and are force-updated on every boot so the deployed agent always uses the repo's current instructions.
 
 ### System prompt
 
@@ -539,10 +595,14 @@ hermes pairing list
 3. Clears empty integer-typed variables from the process environment (prevents `ValueError` in Hermes).
 4. Creates `${HERMES_HOME}/config.yaml` if it doesn't exist.
 5. Initializes Radius wallet if not already done (generates key, calls faucet).
-6. Copies all `skills/*.md` files to `${HERMES_HOME}/skills/` (overwrites on each boot).
-7. Copies skills with `published: true` frontmatter to `${HERMES_HOME}/skills/` in `name/SKILL.md` structure.
-8. Starts the FastAPI agent server in background (binds `PORT`).
-9. Starts `hermes gateway` in foreground.
+6. Copies all local `skills/*.md` files to `${HERMES_HOME}/skills/` (overwrites on each boot).
+7. Copies vendored Radius marketplace skills from the `radiustechsystems/skills` repo into `${HERMES_HOME}/skills/`, preserving their upstream directory layout and creating flat `.md` aliases.
+8. Copies bundled plugins from `plugins/*` to `${HERMES_HOME}/plugins/`.
+9. Enables the bundled `gen-jwt` and `radius-cast` plugin toolsets so A2A auth and Radius wallet tools are available immediately.
+10. Links `HERMES.md`, `.hermes.md`, `AGENTS.md`, `README.md`, `skills/`, `plugins/`, and `scripts/` into `${MESSAGING_CWD}` so gateway sessions see the bundled project context immediately. The three context files are force-overwritten on each boot.
+11. Copies published skills to `${HERMES_HOME}/well-known-skills/` for skill discovery endpoints.
+12. Starts the FastAPI agent server in background (binds `PORT`).
+13. Starts `hermes gateway` in foreground.
 
 ## Troubleshooting
 

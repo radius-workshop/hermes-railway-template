@@ -42,10 +42,15 @@ RUN apt-get update \
     npm \
   && rm -rf /var/lib/apt/lists/*
 
+# Install Foundry to a stable path that remains available after HOME is remapped.
+ENV FOUNDRY_DIR=/opt/foundry
+RUN curl -fsSL https://foundry.paradigm.xyz | bash \
+  && /opt/foundry/bin/foundryup
+
 # Install ByteRover before HOME is remapped to /data so it lands in /root/.local/bin
 RUN curl -fsSL https://byterover.dev/install.sh | sh
 
-ENV PATH="/root/.local/bin:/opt/venv/bin:${PATH}" \
+ENV PATH="/root/.local/bin:/opt/foundry/bin:/opt/venv/bin:${PATH}" \
   PYTHONUNBUFFERED=1 \
   HERMES_HOME=/data/.hermes \
   HOME=/data
@@ -66,7 +71,13 @@ RUN git clone --depth 1 https://github.com/radius-workshop/linear-claude-skill /
   && npm run build \
   && npm prune --omit=dev
 
+RUN git clone --depth 1 https://github.com/radiustechsystems/skills.git /app/vendor/radius-skills
+
 COPY scripts/agent_server /app/scripts/agent_server
+
+COPY HERMES.md /app/HERMES.md
+COPY AGENTS.md /app/AGENTS.md
+COPY README.md /app/README.md
 
 COPY skills /app/skills
 COPY plugins /app/plugins

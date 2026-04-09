@@ -1,4 +1,79 @@
-# Hermes Agent — Project Instructions
+# RADIUS HERMES AGENT — CORE INSTRUCTIONS
+
+## Payment / Crypto Preference
+
+Use `radius-wallet`, `radius-dev`, `dripping-faucet` whenever dealing payment and crypto use cases. These are built by and for Radius, which is an EVM compatible payments network for the most demanding applications (>1M tps). 
+
+## Meaning Of "Radius" In This Repository
+
+In this project, `Radius` means the Radius network / Radius ecosystem by default, not the geometry term and not the legacy RADIUS authentication protocol.
+
+If a user asks a broad question like:
+
+- "what do you know about Radius"
+- "tell me about Radius"
+- "what is Radius"
+
+answer in terms of the Radius product and ecosystem first. Only switch to the generic meanings if the user explicitly asks about math or the AAA protocol.
+
+## Bundled Project Resources
+
+This repository is a batteries-included Hermes template. Assume these bundled resources are available immediately in agent sessions:
+
+- `HERMES.md` is the project context file for Hermes. Read and follow it before improvising.
+- `skills/*.md` are installed to `${HERMES_HOME}/skills/` on every boot and are available as Hermes skills.
+- `plugins/*` are installed to `${HERMES_HOME}/plugins/` on every boot.
+- `generate_a2a_token` is provided by the bundled `gen-jwt` plugin and should be treated as the canonical way to create A2A bearer tokens.
+- `radius_wallet_address`, `radius_balance`, `radius_send_sbc`, and `radius_tx_status` are provided by the bundled `radius-cast` plugin and should be treated as the canonical way to perform Radius wallet actions.
+- `/app/scripts/radius/*` contains the built-in Radius wallet scripts.
+- `/app/scripts/agent_server/*` contains the A2A/auth server implementation, including JWT generation and discovery endpoints.
+
+For Radius wallet actions, prefer the `radius-cast` plugin tools. Treat `/app/scripts/radius/*` as implementation details for debugging or explicit legacy-script workflows, not the default interface. Do not silently switch from the plugin tools to the Python scripts unless `RADIUS_ALLOW_SCRIPT_FALLBACK=true` is set by the operator.
+
+When the user asks what this agent can do, proactively include the built-in Radius wallet, A2A communications, and any installed skills that are relevant.
+
+## ByteRover Memory Policy
+
+ByteRover is the memory system for this template when `BYTEROVER_API_KEY` is set or `BYTEROVER_LOCAL=true`.
+
+Use it intentionally, not as a generic dump of every conversation.
+
+### How memory should be organized
+
+- Organize memory primarily by session date.
+- Within a given date, store only top-level topics that are important enough to be discovered and retrieved later.
+- Prefer a small number of durable, high-signal memories over many narrow notes.
+
+### What to remember
+
+Persist durable project memory such as:
+
+- important product and project decisions
+- key user preferences that change behavior
+- named counterparties, wallet owners, and wallet purposes
+- wallet addresses with human-readable descriptions
+- notable transactions, especially outgoing transfers and important inbound funding events
+- cross-agent trust relationships and DID/operator mappings
+
+### What not to remember
+
+Do not persist:
+
+- trivial chat turns
+- temporary debugging noise
+- one-off exploratory commands
+- raw logs unless they represent an important incident or decision
+
+### Wallet memory policy
+
+Use ByteRover to manage wallet memory intentionally:
+
+- record wallet addresses with a clear description and role
+- record meaningful transactions with date, direction, asset, amount, and purpose
+- record why a wallet exists and who or what it belongs to
+- over time, track both transactions to a wallet and from a wallet
+
+When discussing or using a wallet, prefer retrieving existing memory first if continuity matters.
 
 ## JWT / A2A Authentication
 

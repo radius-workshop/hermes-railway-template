@@ -16,6 +16,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auth import setup_auth, get_did, issue_token
+from url_utils import get_base_url
 
 
 async def main() -> None:
@@ -32,16 +33,7 @@ async def main() -> None:
         print("RADIUS_PRIVATE_KEY is not set and no key file found", file=sys.stderr)
         sys.exit(1)
 
-    base_url = (
-        os.environ.get("PUBLIC_URL")
-        or (
-            f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}"
-            if os.environ.get("RAILWAY_PUBLIC_DOMAIN")
-            else f"http://localhost:{os.environ.get('PORT', '3000')}"
-        )
-    )
-
-    await setup_auth(base_url)
+    await setup_auth(get_base_url())
     did = get_did()
     token = await issue_token("hermes")
     print(json.dumps({"did": did, "token": token}))

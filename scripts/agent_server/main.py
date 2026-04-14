@@ -788,7 +788,15 @@ async def internal_a2a_session_get(session_id: str, _: None = Depends(_internal_
     try:
         session = _a2a_session_store.get_session(session_id)
     except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
+        log_event(
+            logger,
+            logging.WARNING,
+            "Invalid session lookup request",
+            event="a2a.session.get.invalid_request",
+            session_id=session_id,
+            error=str(exc),
+        )
+        return JSONResponse({"error": "invalid_request"}, status_code=400)
     if not session:
         return JSONResponse({"error": "Not Found"}, status_code=404)
     return JSONResponse(_a2a_session_store.serialize_for_response(session))

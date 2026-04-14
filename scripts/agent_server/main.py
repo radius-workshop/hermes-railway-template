@@ -327,7 +327,7 @@ async def _send_managed_a2a_turn(session: dict[str, Any], text: str) -> dict[str
     if not remote_agent:
         raise RuntimeError("Session has no remote_agent configured")
 
-    api_key = str(session.get("remote_api_key") or "").strip()
+    api_key = _a2a_session_store.get_remote_api_key(str(session.get("session_id") or ""))
     if api_key:
         token = await _exchange_api_key_for_token(remote_agent, api_key)
         auth_mode = "token_exchange"
@@ -741,7 +741,10 @@ async def debug_skills(auth: dict = Depends(jwt_auth_dep)):
 @app.post("/internal/a2a/sessions/outbound")
 async def internal_a2a_session_outbound(request: Request, _: None = Depends(_internal_auth_dep)):
     payload = await request.json()
-    session = _a2a_session_store.create_or_update_outbound(payload if isinstance(payload, dict) else {})
+    try:
+        session = _a2a_session_store.create_or_update_outbound(payload if isinstance(payload, dict) else {})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     log_event(
         logger,
         logging.INFO,
@@ -758,7 +761,10 @@ async def internal_a2a_session_outbound(request: Request, _: None = Depends(_int
 @app.post("/internal/a2a/sessions/outbound-result")
 async def internal_a2a_session_outbound_result(request: Request, _: None = Depends(_internal_auth_dep)):
     payload = await request.json()
-    session = _a2a_session_store.record_outbound_result(payload if isinstance(payload, dict) else {})
+    try:
+        session = _a2a_session_store.record_outbound_result(payload if isinstance(payload, dict) else {})
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
     if not session:
         return JSONResponse({"ok": False, "error": "session_not_found"}, status_code=404)
     return JSONResponse({"ok": True, "session": _a2a_session_store.serialize_for_response(session)})
@@ -779,7 +785,10 @@ async def internal_a2a_session_resolve(request: Request, _: None = Depends(_inte
 
 @app.get("/internal/a2a/sessions/{session_id}")
 async def internal_a2a_session_get(session_id: str, _: None = Depends(_internal_auth_dep)):
-    session = _a2a_session_store.get_session(session_id)
+    try:
+        session = _a2a_session_store.get_session(session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     if not session:
         return JSONResponse({"error": "Not Found"}, status_code=404)
     return JSONResponse(_a2a_session_store.serialize_for_response(session))

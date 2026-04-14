@@ -14,10 +14,13 @@ class A2ASessionStore:
     def __init__(self, root: Path):
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+        self._remote_api_keys: dict[str, str] = {}
 
     def create_or_update_outbound(self, payload: dict[str, Any]) -> dict[str, Any]:
         now = self._ts()
-        session_id = str(payload.get("session_id") or "").strip() or str(uuid.uuid4())
+        session_id = self._normalize_session_id(
+            str(payload.get("session_id") or "").strip() or str(uuid.uuid4())
+        )
         session = self.get_session(session_id) or self._new_session(session_id, now)
 
         context_id = str(payload.get("context_id") or session.get("context_id") or "").strip()
@@ -32,9 +35,10 @@ class A2ASessionStore:
         if remote_did:
             session["remote_did"] = remote_did
 
-        remote_api_key = str(payload.get("remote_api_key") or session.get("remote_api_key") or "").strip()
+        remote_api_key = str(payload.get("remote_api_key") or "").strip()
         if remote_api_key:
-            session["remote_api_key"] = remote_api_key
+            self._remote_api_keys[session_id] = remote_api_key
+        session.pop("remote_api_key", None)
 
         goal = str(payload.get("goal") or session.get("goal") or "").strip()
         if goal:
@@ -244,7 +248,7 @@ class A2ASessionStore:
         now = time.time()
         runnable: list[dict[str, Any]] = []
         for path in sorted(self.root.glob("*.json")):
-            session = self._read_json(path)
+            session = self._load_session(path)
             if not session:
                 continue
             if session.get("status") != "active":
@@ -261,13 +265,13 @@ class A2ASessionStore:
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         if not session_id:
             return None
-        return self._read_json(self.root / f"{session_id}.json")
+        return self._load_session(self._session_path(session_id))
 
     def find_by_context(self, context_id: str) -> dict[str, Any] | None:
         if not context_id:
             return None
         for path in sorted(self.root.glob("*.json")):
-            session = self._read_json(path)
+            session = self._load_session(path)
             if session and session.get("context_id") == context_id:
                 return session
         return None
@@ -295,7 +299,7 @@ class A2ASessionStore:
             return None
 
         for path in sorted(self.root.glob("*.json")):
-            session = self._read_json(path)
+            session = self._load_session(path)
             if not session or session.get("status") != "active":
                 continue
             origin = session.get("origin") or {}
@@ -345,6 +349,11 @@ class A2ASessionStore:
         data["recent_cards"] = list(session.get("recent_cards") or [])
         return data
 
+    def get_remote_api_key(self, session_id: str) -> str:
+        if not session_id:
+            return ""
+        return str(self._remote_api_keys.get(self._normalize_session_id(session_id)) or "").strip()
+
     def _new_session(self, session_id: str, now: str) -> dict[str, Any]:
         return {
             "session_id": session_id,
@@ -361,7 +370,6 @@ class A2ASessionStore:
             "context_id": "",
             "remote_agent": "",
             "remote_did": "",
-            "remote_api_key": "",
             "origin": {},
             "recent_messages": [],
             "recent_events": [],
@@ -392,10 +400,13 @@ class A2ASessionStore:
         payload["at"] = self._ts()
         events.append(payload)
         session["recent_events"] = events[-30:]
-        self._append_jsonl(self.root / f"{session['session_id']}.events.jsonl", payload)
+        self._append_jsonl(self._events_path(str(session["session_id"])), payload)
 
     def _save_session(self, session: dict[str, Any]) -> None:
-        path = self.root / f"{session['session_id']}.json"
+        session_id = self._normalize_session_id(str(session["session_id"]))
+        session["session_id"] = session_id
+        session.pop("remote_api_key", None)
+        path = self._session_path(session_id)
         tmp_path = path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(session, indent=2, sort_keys=True), encoding="utf-8")
         tmp_path.replace(path)
@@ -429,6 +440,42 @@ class A2ASessionStore:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             return None
+
+    def _load_session(self, path: Path) -> dict[str, Any] | None:
+        session = self._read_json(path)
+        if not isinstance(session, dict):
+            return None
+        session_id = str(session.get("session_id") or "").strip()
+        if not session_id:
+            return None
+        try:
+            normalized_session_id = self._normalize_session_id(session_id)
+        except ValueError:
+            return None
+        if normalized_session_id != session_id:
+            session["session_id"] = normalized_session_id
+        if session.pop("remote_api_key", None):
+            self._save_session(session)
+        return session
+
+    def _session_path(self, session_id: str) -> Path:
+        return self._resolve_session_path(self._normalize_session_id(session_id), ".json")
+
+    def _events_path(self, session_id: str) -> Path:
+        return self._resolve_session_path(self._normalize_session_id(session_id), ".events.jsonl")
+
+    def _resolve_session_path(self, session_id: str, suffix: str) -> Path:
+        path = (self.root / f"{session_id}{suffix}").resolve()
+        path.relative_to(self.root.resolve())
+        return path
+
+    def _normalize_session_id(self, session_id: str) -> str:
+        value = str(session_id or "").strip()
+        if not value:
+            raise ValueError("session_id is required")
+        if "/" in value or "\\" in value or ".." in value:
+            raise ValueError("Invalid session_id")
+        return value
 
     def _ts(self) -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())

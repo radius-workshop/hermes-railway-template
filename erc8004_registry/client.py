@@ -78,7 +78,7 @@ def _run_command(cmd):
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
         stdout = (result.stdout or "").strip()
-        message = stderr or stdout or f"Command failed: {' '.join(cmd)}"
+        message = stderr or stdout or f"Command failed with exit code {result.returncode}"
         raise RuntimeError(message)
     return (result.stdout or "").strip()
 

@@ -764,8 +764,6 @@ async def internal_a2a_session_outbound(request: Request, _: None = Depends(_int
     )
     return JSONResponse({"ok": True, "session": _a2a_session_store.serialize_for_response(session)})
 
-        log_event(logger, logging.WARNING, "Invalid outbound result payload", event="a2a.outbound_result.invalid_payload", error=str(exc))
-        return JSONResponse({"ok": False, "error": "invalid_request"}, status_code=400)
 @app.post("/internal/a2a/sessions/outbound-result")
 async def internal_a2a_session_outbound_result(request: Request, _: None = Depends(_internal_auth_dep)):
     payload = await request.json()

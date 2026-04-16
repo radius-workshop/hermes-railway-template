@@ -553,9 +553,26 @@ done
 python3 - <<'PYEOF'
 import json
 import os
+import shutil
 from pathlib import Path
 
 manifest = json.loads(Path(os.environ["VENDORED_SKILLS_MANIFEST"]).read_text(encoding="utf-8"))
+skills_dir = Path(os.environ["HERMES_HOME"]) / "skills"
+
+# Cleanup for older template revisions that copied vendored skills into
+# ${HERMES_HOME}/skills/radius/<skill>/SKILL.md. Vendored skills should now be
+# resolved only via skills.external_dirs in config.yaml.
+built_in_radius_skills = {"radius-wallet", "a2a-comms", "registering-agent"}
+legacy_radius_root = skills_dir / "radius"
+for skill in manifest.get("skills", []):
+    skill_name = skill.get("name")
+    if not skill_name or skill_name in built_in_radius_skills:
+        continue
+    legacy_skill_dir = legacy_radius_root / skill_name
+    if legacy_skill_dir.exists():
+        shutil.rmtree(legacy_skill_dir, ignore_errors=True)
+        print(f"[bootstrap] Removed legacy local vendored skill copy: {legacy_skill_dir}")
+
 for skills_root in manifest.get("roots", []):
     print(f"[bootstrap] External skill directory available: {skills_root}")
 PYEOF

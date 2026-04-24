@@ -1990,8 +1990,9 @@ def _build_agent_graph_payload() -> dict[str, Any]:
         href: str | None = None,
         status: str | None = None,
         tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
-        nodes[node_id] = {
+        record = {
             "id": node_id,
             "label": label,
             "kind": kind,
@@ -2002,6 +2003,9 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             "status": status,
             "tags": sorted({str(tag).strip() for tag in (tags or []) if str(tag).strip()}),
         }
+        if metadata:
+            record["metadata"] = metadata
+        nodes[node_id] = record
 
     def add_edge(source: str, target: str, kind: str) -> None:
         edges.add((source, target, kind))
@@ -2022,7 +2026,13 @@ def _build_agent_graph_payload() -> dict[str, Any]:
     capability_ids: dict[str, str] = {}
 
     def add_capability(
-        slug: str, label: str, detail: str, *, status: str = "available", tags: list[str] | None = None
+        slug: str,
+        label: str,
+        detail: str,
+        *,
+        status: str = "available",
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         node_id = f"capability:{slug}"
         capability_ids[slug] = node_id
@@ -2035,6 +2045,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             detail=detail,
             status=status,
             tags=tags,
+            metadata=metadata,
         )
         add_edge("agent", node_id, "contains")
         return node_id
@@ -2048,6 +2059,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
         ),
         status="enabled",
         tags=["A2A", "JSON-RPC"],
+        metadata={"source": "runtime", "tools": [], "interfaces": [f"{BASE_URL}/a2a"]},
     )
     add_capability(
         "jwt",
@@ -2055,6 +2067,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
         "Bearer JWT auth backed by DID-signed ES256K tokens and optional API-key exchange.",
         status="enabled",
         tags=["JWT", "DID"],
+        metadata={"source": "runtime", "tools": []},
     )
     add_capability(
         "wallet",
@@ -2066,6 +2079,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
         ),
         status="enabled" if _wallet_address() else "configured",
         tags=["Radius", "Wallet"],
+        metadata={"source": "runtime", "tools": []},
     )
     add_capability(
         "erc8004",
@@ -2073,6 +2087,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
         "Registration payloads are exposed publicly and backed by deterministic registry tools.",
         status="enabled",
         tags=["ERC-8004", "Registration"],
+        metadata={"source": "runtime", "tools": []},
     )
     if os.environ.get("WEBHOOK_SECRET"):
         add_capability(
@@ -2081,6 +2096,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             "Delegated A2A flows can use webhook-backed push notifications.",
             status="enabled",
             tags=["Webhook", "A2A"],
+            metadata={"source": "runtime", "tools": []},
         )
     if os.environ.get("BYTEROVER_API_KEY") or _is_true(os.environ.get("BYTEROVER_LOCAL")):
         add_capability(
@@ -2089,6 +2105,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             "Structured long-term memory is configured for durable project and wallet context.",
             status="enabled",
             tags=["Memory"],
+            metadata={"source": "runtime", "tools": []},
         )
     if os.environ.get("PARA_API_KEY") or os.environ.get("PARA_WALLET_ID"):
         add_capability(
@@ -2097,6 +2114,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             "Optional Para-backed session wallet provider is configured alongside the local Radius wallet.",
             status="enabled",
             tags=["Wallet", "Para"],
+            metadata={"source": "runtime", "tools": []},
         )
 
     surface_specs = [
@@ -2142,6 +2160,20 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             f"{BASE_URL}/a2a",
             "JSON-RPC request endpoint for agent-to-agent calls.",
         ),
+        (
+            "surface:openapi",
+            "OpenAPI Spec",
+            "interfaces",
+            f"{BASE_URL}/openapi.json",
+            "Machine-readable OpenAPI descriptor for HTTP clients and API catalogs.",
+        ),
+        (
+            "surface:health",
+            "Health Endpoint",
+            "interfaces",
+            f"{BASE_URL}/health",
+            "Operational status endpoint referenced by automated discovery clients.",
+        ),
     ]
     if _token_exchange_enabled():
         surface_specs.append(
@@ -2165,6 +2197,7 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             href=href,
             status="public",
             tags=["public"],
+            metadata={"surface_type": category},
         )
         add_edge("agent", node_id, "exposes")
 
@@ -2273,44 +2306,57 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             add_edge("surface:skills-index", node_id, "lists")
             add_edge("surface:agent-card", node_id, "advertises")
 
+    plugin_capability_targets = {
+        "radius-cast": "wallet",
+        "gen-jwt": "jwt",
+        "erc8004-registry": "erc8004",
+        "a2a-send": "a2a",
+        "agent-info": "a2a",
+    }
+
     for plugin in plugins:
         plugin_name = plugin["name"]
         enabled = all_toolsets_enabled or plugin_name in enabled_toolsets
-        plugin_id = f"plugin:{plugin_name}"
-        add_node(
-            plugin_id,
-            _humanize_slug(plugin_name),
-            kind="plugin",
-            category="plugins",
-            external=False,
-            detail=plugin.get("description") or "Bundled plugin",
-            status="enabled" if enabled else "bundled",
-            tags=["plugin", "enabled" if enabled else "bundled"],
-        )
-        add_edge("agent", plugin_id, "extends")
+        tools = [str(tool).strip() for tool in plugin.get("tools", []) if str(tool).strip()]
+        target_slug = plugin_capability_targets.get(plugin_name)
+        if target_slug and target_slug in capability_ids:
+            capability_id = capability_ids[target_slug]
+            capability = nodes[capability_id]
+            metadata = dict(capability.get("metadata") or {})
+            metadata["source"] = metadata.get("source") or "runtime"
+            metadata["plugins"] = sorted({*(metadata.get("plugins") or []), plugin_name})
+            metadata["tools"] = sorted({*(metadata.get("tools") or []), *tools})
+            capability["metadata"] = metadata
+            capability["tags"] = sorted({*(capability.get("tags") or []), "plugin-backed"})
+            capability_id_for_tools = capability_id
+        else:
+            capability_id_for_tools = add_capability(
+                f"toolset-{plugin_name}",
+                _humanize_slug(plugin_name),
+                plugin.get("description") or "Bundled capability",
+                status="enabled" if enabled else "bundled",
+                tags=["plugin-backed", "enabled" if enabled else "bundled"],
+                metadata={
+                    "source": "plugin",
+                    "plugins": [plugin_name],
+                    "tools": tools,
+                    "path": plugin.get("path"),
+                },
+            )
 
-        for tool_name in plugin.get("tools", []):
+        for tool_name in tools:
             tool_id = f"tool:{tool_name}"
             add_node(
                 tool_id,
                 _humanize_slug(tool_name),
                 kind="tool",
-                category="tools",
+                category="capabilities",
                 external=False,
                 detail=f"{tool_name} is provided by the {plugin_name} plugin.",
                 status="enabled" if enabled else "bundled",
                 tags=[plugin_name],
             )
-            add_edge(plugin_id, tool_id, "provides")
-
-        if plugin_name == "radius-cast" and "wallet" in capability_ids:
-            add_edge(capability_ids["wallet"], plugin_id, "implemented_by")
-        if plugin_name == "gen-jwt" and "jwt" in capability_ids:
-            add_edge(capability_ids["jwt"], plugin_id, "implemented_by")
-        if plugin_name == "erc8004-registry" and "erc8004" in capability_ids:
-            add_edge(capability_ids["erc8004"], plugin_id, "implemented_by")
-        if plugin_name == "a2a-send" and "a2a" in capability_ids:
-            add_edge(capability_ids["a2a"], plugin_id, "implemented_by")
+            add_edge(capability_id_for_tools, tool_id, "provides")
 
     serialized_edges = [
         {"source": source, "target": target, "kind": kind}
@@ -2319,6 +2365,8 @@ def _build_agent_graph_payload() -> dict[str, Any]:
     ]
     serialized_nodes = [nodes[node_id] for node_id in sorted(nodes)]
     external_count = sum(1 for node in serialized_nodes if node.get("external"))
+    capability_count = sum(1 for node in serialized_nodes if node.get("kind") == "capability")
+    tool_count = sum(1 for node in serialized_nodes if node.get("kind") == "tool")
 
     return {
         "generated_at": _now_iso(),
@@ -2333,7 +2381,9 @@ def _build_agent_graph_payload() -> dict[str, Any]:
             "external_count": external_count,
             "internal_count": len(serialized_nodes) - external_count,
             "published_skill_count": len(published_by_name),
+            "capability_count": capability_count,
             "plugin_count": len(plugins),
+            "tool_count": tool_count,
         },
         "nodes": serialized_nodes,
         "edges": serialized_edges,
@@ -2346,7 +2396,6 @@ def _format_graph_fallback(graph_payload: dict[str, Any]) -> str:
         "interfaces": "External Interfaces",
         "capabilities": "Capabilities",
         "skills": "Skills",
-        "plugins": "Plugins",
         "tools": "Tools",
         "channels": "Channels",
     }
@@ -2391,6 +2440,110 @@ def _format_graph_fallback(graph_payload: dict[str, Any]) -> str:
             "</section>"
         )
     return "".join(cards)
+
+
+def _format_tools_summary(tools: list[str]) -> str:
+    if not tools:
+        return "No direct tools"
+    if len(tools) <= 2:
+        return ", ".join(_humanize_slug(tool) for tool in tools)
+    return f"{len(tools)} tools: " + ", ".join(_humanize_slug(tool) for tool in tools[:2])
+
+
+def _format_capabilities_table(graph_payload: dict[str, Any]) -> str:
+    capabilities = sorted(
+        (
+            node
+            for node in graph_payload.get("nodes", [])
+            if node.get("kind") == "capability"
+        ),
+        key=lambda item: str(item.get("label") or ""),
+    )
+    if not capabilities:
+        return "<p class='runtime-empty'>No capabilities were detected in this runtime.</p>"
+
+    rows: list[str] = []
+    for node in capabilities:
+        metadata = node.get("metadata") or {}
+        tools = sorted(str(tool) for tool in metadata.get("tools", []) if str(tool).strip())
+        plugins = sorted(str(plugin) for plugin in metadata.get("plugins", []) if str(plugin).strip())
+        tags = [str(tag) for tag in node.get("tags", []) if str(tag).strip()]
+        source = str(metadata.get("source") or ("plugin" if plugins else "runtime"))
+        details = []
+        if plugins:
+            details.append(f"Implemented by: {', '.join(plugins)}")
+        if tools:
+            details.append(f"Tools: {', '.join(tools)}")
+        if tags:
+            details.append(f"Tags: {', '.join(tags)}")
+        details.append(str(node.get("detail") or "No details available."))
+        rows.append(
+            "<tr>"
+            "<td>"
+            f"<strong>{html.escape(str(node.get('label') or 'Unknown'))}</strong>"
+            f"<span>{html.escape(str(node.get('status') or 'available'))}</span>"
+            "</td>"
+            f"<td>{html.escape(_truncate_text(str(node.get('detail') or ''), 120))}</td>"
+            f"<td><span class='runtime-tool-summary'>{html.escape(_format_tools_summary(tools))}</span></td>"
+            f"<td>{html.escape(_humanize_slug(source))}</td>"
+            "<td>"
+            "<details class='runtime-details'>"
+            "<summary>Details</summary>"
+            f"<p>{html.escape(' | '.join(details))}</p>"
+            "</details>"
+            "</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='runtime-table-shell'>"
+        "<table class='runtime-table'>"
+        "<thead><tr><th>Capability</th><th>Summary</th><th>Tools</th><th>Source</th><th>More</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+        "</div>"
+    )
+
+
+def _format_surfaces_table(graph_payload: dict[str, Any]) -> str:
+    surfaces = sorted(
+        (
+            node
+            for node in graph_payload.get("nodes", [])
+            if node.get("kind") == "surface"
+        ),
+        key=lambda item: (str(item.get("category") or ""), str(item.get("label") or "")),
+    )
+    if not surfaces:
+        return "<p class='runtime-empty'>No public surfaces were detected in this runtime.</p>"
+
+    rows: list[str] = []
+    for node in surfaces:
+        href = str(node.get("href") or "").strip()
+        category = str(node.get("category") or "surface")
+        link = (
+            f"<a href='{html.escape(href)}' target='_blank' rel='noopener'>{html.escape(href)}</a>"
+            if href
+            else "Unavailable"
+        )
+        rows.append(
+            "<tr>"
+            "<td>"
+            f"<strong>{html.escape(str(node.get('label') or 'Unknown'))}</strong>"
+            f"<span>{html.escape(_humanize_slug(category))}</span>"
+            "</td>"
+            f"<td>{link}</td>"
+            f"<td>{html.escape(_truncate_text(str(node.get('detail') or ''), 130))}</td>"
+            f"<td>{html.escape(str(node.get('status') or 'public'))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div class='runtime-table-shell'>"
+        "<table class='runtime-table surface-table'>"
+        "<thead><tr><th>Surface</th><th>URI</th><th>Purpose</th><th>Status</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+        "</div>"
+    )
 
 
 def _canonical_urls() -> list[str]:
@@ -2639,16 +2792,17 @@ async def index(request: Request):
     explorer_link = wallet_explorer_link(wallet_summary.get("address"))
 
     published_skills = skills_index.get("skills", [])
-    _, discovery_facts_html = _format_discovery_cards(agent_card)
     graph_payload = _build_agent_graph_payload()
-    graph_fallback_html = _format_graph_fallback(graph_payload)
+    capability_table_html = _format_capabilities_table(graph_payload)
+    surface_table_html = _format_surfaces_table(graph_payload)
     graph_stats = graph_payload.get("stats", {})
     graph_node_count = int(graph_stats.get("node_count", 0) or 0)
     graph_edge_count = int(graph_stats.get("edge_count", 0) or 0)
     graph_external_count = int(graph_stats.get("external_count", 0) or 0)
     graph_internal_count = int(graph_stats.get("internal_count", 0) or 0)
     graph_published_skill_count = int(graph_stats.get("published_skill_count", 0) or 0)
-    graph_plugin_count = int(graph_stats.get("plugin_count", 0) or 0)
+    graph_capability_count = int(graph_stats.get("capability_count", 0) or 0)
+    graph_tool_count = int(graph_stats.get("tool_count", 0) or 0)
     wallet_note = (
         f"<p class='note'>Wallet data unavailable: {html.escape(wallet_error)}</p>"
         if wallet_error
@@ -2791,7 +2945,7 @@ async def index(request: Request):
     }}
 
     .wrap {{
-      max-width: 1180px;
+      max-width: 1440px;
       margin: 0 auto;
       position: relative;
       z-index: 1;
@@ -3119,18 +3273,55 @@ async def index(request: Request):
     }}
 
     .nav-cta {{
-      padding: 0 16px;
-      background: var(--primary);
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+      padding: 0 17px;
+      border: 1px solid rgba(255,255,255,0.68);
+      background:
+        radial-gradient(circle at 12% 18%, rgba(255,255,255,0.96), transparent 18%),
+        radial-gradient(circle at 24% 78%, rgba(79,209,197,0.92), transparent 27%),
+        radial-gradient(circle at 50% 22%, rgba(255,205,94,0.95), transparent 27%),
+        radial-gradient(circle at 72% 72%, rgba(235,99,89,0.95), transparent 30%),
+        radial-gradient(circle at 88% 20%, rgba(111,92,255,0.92), transparent 26%),
+        linear-gradient(110deg, #121216, #37242d 36%, #0f0f12);
       color: #fff;
       font-size: 13px;
-      font-weight: 600;
+      font-weight: 700;
       letter-spacing: 0.01em;
-      box-shadow: 0 14px 30px rgba(235, 99, 89, 0.26);
+      text-shadow: 0 1px 12px rgba(0,0,0,0.32);
+      box-shadow:
+        0 16px 34px rgba(235,99,89,0.2),
+        0 8px 20px rgba(111,92,255,0.14),
+        inset 0 1px 0 rgba(255,255,255,0.58),
+        inset 0 -14px 24px rgba(0,0,0,0.14);
+    }}
+
+    .nav-cta::before {{
+      content: "";
+      position: absolute;
+      inset: -55%;
+      z-index: -1;
+      background:
+        conic-gradient(from 120deg, rgba(255,255,255,0), rgba(255,255,255,0.72), rgba(255,255,255,0) 32%),
+        radial-gradient(circle, rgba(255,255,255,0.24), transparent 54%);
+      transform: rotate(12deg);
+      transition: transform 420ms ease;
+      mix-blend-mode: screen;
     }}
 
     .nav-cta:hover {{
-      transform: translateY(-1px);
-      background: #df5a50;
+      transform: translateY(-2px);
+      box-shadow:
+        0 20px 42px rgba(235,99,89,0.26),
+        0 12px 26px rgba(79,209,197,0.16),
+        0 0 0 4px rgba(255,255,255,0.42),
+        inset 0 1px 0 rgba(255,255,255,0.7),
+        inset 0 -14px 24px rgba(0,0,0,0.1);
+    }}
+
+    .nav-cta:hover::before {{
+      transform: rotate(32deg) translateX(8%);
     }}
 
     .hero-shell {{
@@ -3482,25 +3673,24 @@ async def index(request: Request):
 
     .agent-card-shell {{
       position: relative;
-      border: 1px solid rgba(255, 255, 255, 0.68);
-      border-radius: 30px;
-      padding: clamp(1rem, 1.6vw, 1.4rem);
-      background:
-        linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,255,255,0.8)),
-        linear-gradient(140deg, rgba(235,99,89,0.06), rgba(226,221,217,0.16));
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(18px);
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
+      box-shadow: none;
+      backdrop-filter: none;
     }}
 
     .agent-pdp {{
       display: grid;
-      grid-template-columns: minmax(0, 1.72fr) minmax(19rem, 0.9fr);
+      grid-template-columns: minmax(0, 1fr) minmax(22rem, 22rem);
       gap: 0;
       align-items: start;
       border-radius: 24px;
       overflow: hidden;
-      border: 1px solid rgba(31,31,37,0.08);
+      border: 0;
       background: rgba(255,255,255,0.62);
+      box-shadow: var(--shadow);
     }}
 
     .agent-visual-panel {{
@@ -3515,7 +3705,8 @@ async def index(request: Request):
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto auto;
       gap: 10px;
-      margin-bottom: 10px;
+      margin-top: 12px;
+      margin-bottom: 0;
       align-items: center;
     }}
 
@@ -3559,7 +3750,8 @@ async def index(request: Request):
       align-items: center;
       justify-content: space-between;
       gap: 12px;
-      margin-bottom: 12px;
+      margin-top: 10px;
+      margin-bottom: 0;
       color: rgba(64, 46, 34, 0.68);
       font-size: 12px;
     }}
@@ -3585,6 +3777,19 @@ async def index(request: Request):
       border-radius: 22px;
     }}
 
+    .graph-selection-dock {{
+      margin-top: 12px;
+      transform: translateY(-2px);
+    }}
+
+    .graph-selection-dock .agent-detail-card {{
+      border-radius: 20px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,249,236,0.84)),
+        linear-gradient(135deg, rgba(242,196,100,0.14), rgba(235,99,89,0.06));
+      box-shadow: 0 18px 42px rgba(76,56,41,0.1), inset 0 1px 0 rgba(255,255,255,0.86);
+    }}
+
     .agent-detail-rail {{
       display: grid;
       gap: 16px;
@@ -3596,6 +3801,7 @@ async def index(request: Request):
     .agent-detail-title h1 {{
       max-width: none;
       margin: 0;
+      font-size: clamp(2.1rem, 4vw, 3.7rem);
     }}
 
     .agent-detail-title p {{
@@ -3609,11 +3815,6 @@ async def index(request: Request):
       color: rgba(31,31,37,0.72);
     }}
 
-    .agent-cta-stack {{
-      display: grid;
-      gap: 10px;
-    }}
-
     .agent-cta {{
       display: inline-flex;
       align-items: center;
@@ -3624,17 +3825,58 @@ async def index(request: Request):
       font-size: 15px;
       font-weight: 600;
       letter-spacing: -0.01em;
-      transition: transform 160ms ease, background 160ms ease, color 160ms ease, border-color 160ms ease;
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+      transition: transform 180ms ease, background 180ms ease, color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
     }}
 
     .agent-cta:hover {{
-      transform: translateY(-1px);
+      transform: translateY(-2px);
     }}
 
     .agent-cta.primary {{
-      background: #0f0f12;
+      border: 1px solid rgba(255,255,255,0.68);
+      background:
+        radial-gradient(circle at 12% 18%, rgba(255,255,255,0.96), transparent 18%),
+        radial-gradient(circle at 24% 78%, rgba(79,209,197,0.92), transparent 27%),
+        radial-gradient(circle at 50% 22%, rgba(255,205,94,0.95), transparent 27%),
+        radial-gradient(circle at 72% 72%, rgba(235,99,89,0.95), transparent 30%),
+        radial-gradient(circle at 88% 20%, rgba(111,92,255,0.92), transparent 26%),
+        linear-gradient(110deg, #121216, #37242d 36%, #0f0f12);
       color: #fff;
-      box-shadow: 0 14px 28px rgba(15,15,18,0.14);
+      text-shadow: 0 1px 16px rgba(0,0,0,0.36);
+      box-shadow:
+        0 18px 38px rgba(235,99,89,0.22),
+        0 10px 24px rgba(111,92,255,0.16),
+        inset 0 1px 0 rgba(255,255,255,0.58),
+        inset 0 -18px 30px rgba(0,0,0,0.16);
+    }}
+
+    .agent-cta.primary::before {{
+      content: "";
+      position: absolute;
+      inset: -45%;
+      z-index: -1;
+      background:
+        conic-gradient(from 120deg, rgba(255,255,255,0), rgba(255,255,255,0.72), rgba(255,255,255,0) 32%),
+        radial-gradient(circle, rgba(255,255,255,0.26), transparent 54%);
+      transform: rotate(12deg);
+      transition: transform 420ms ease;
+      mix-blend-mode: screen;
+    }}
+
+    .agent-cta.primary:hover {{
+      box-shadow:
+        0 24px 54px rgba(235,99,89,0.28),
+        0 16px 36px rgba(79,209,197,0.18),
+        0 0 0 5px rgba(255,255,255,0.44),
+        inset 0 1px 0 rgba(255,255,255,0.7),
+        inset 0 -18px 30px rgba(0,0,0,0.12);
+    }}
+
+    .agent-cta.primary:hover::before {{
+      transform: rotate(32deg) translateX(8%);
     }}
 
     .agent-cta.secondary {{
@@ -3714,6 +3956,118 @@ async def index(request: Request):
     .agent-runtime-head p {{
       margin-top: 6px;
       max-width: 40rem;
+    }}
+
+    .runtime-table-section {{
+      display: grid;
+      gap: 10px;
+      padding: 15px;
+      border-radius: 24px;
+      border: 1px solid rgba(31,31,37,0.08);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.9), rgba(255,255,255,0.78)),
+        linear-gradient(140deg, rgba(242,196,100,0.08), rgba(235,99,89,0.03));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.8);
+    }}
+
+    .runtime-table-head {{
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+    }}
+
+    .runtime-table-head h3 {{
+      margin: 0;
+      font-size: 1rem;
+      letter-spacing: -0.02em;
+    }}
+
+    .runtime-table-head p {{
+      max-width: 38rem;
+      font-size: 0.88rem;
+    }}
+
+    .runtime-table-shell {{
+      overflow-x: auto;
+      border-radius: 18px;
+      border: 1px solid rgba(89,59,34,0.08);
+      background: rgba(255,255,255,0.68);
+    }}
+
+    .runtime-table {{
+      width: 100%;
+      min-width: 720px;
+      border-collapse: collapse;
+    }}
+
+    .runtime-table th,
+    .runtime-table td {{
+      padding: 13px 14px;
+      border-bottom: 1px solid rgba(89,59,34,0.08);
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }}
+
+    .runtime-table th {{
+      color: rgba(89, 59, 34, 0.62);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      background: rgba(255,248,232,0.72);
+    }}
+
+    .runtime-table tr:last-child td {{
+      border-bottom: 0;
+    }}
+
+    .runtime-table td strong {{
+      display: block;
+      color: var(--foreground);
+      font-size: 13px;
+      line-height: 1.25;
+    }}
+
+    .runtime-table td span {{
+      display: inline-flex;
+      margin-top: 5px;
+      color: rgba(89, 59, 34, 0.62);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }}
+
+    .runtime-table a {{
+      color: var(--primary);
+      word-break: break-all;
+      font-weight: 600;
+    }}
+
+    .runtime-tool-summary {{
+      margin-top: 0 !important;
+      color: rgba(31,31,37,0.78) !important;
+      letter-spacing: 0 !important;
+      text-transform: none !important;
+    }}
+
+    .runtime-details summary {{
+      cursor: pointer;
+      color: var(--primary);
+      font-weight: 700;
+    }}
+
+    .runtime-details p {{
+      margin-top: 7px;
+      font-size: 12px;
+    }}
+
+    .runtime-empty {{
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.68);
     }}
 
     .runtime-grid {{
@@ -4065,6 +4419,31 @@ async def index(request: Request):
       color: #b34d45;
     }}
 
+    .graph-label[data-kind='interface'] {{
+      border-color: rgba(127, 199, 255, 0.34);
+      color: #276f9f;
+    }}
+
+    .graph-label[data-kind='capability'] {{
+      border-color: rgba(114, 166, 64, 0.3);
+      color: #496c28;
+    }}
+
+    .graph-label[data-kind='skill'] {{
+      border-color: rgba(255, 184, 111, 0.42);
+      color: #945928;
+    }}
+
+    .graph-label[data-kind='tool'] {{
+      border-color: rgba(143, 140, 255, 0.36);
+      color: #4b48a5;
+    }}
+
+    .graph-label[data-kind='channel'] {{
+      border-color: rgba(99, 216, 198, 0.34);
+      color: #287b70;
+    }}
+
     .graph-label.is-hovered {{
       box-shadow: 0 0 0 4px rgba(242,196,100,0.18), 0 12px 26px rgba(76,56,41,0.16);
       transform: translate(-50%, -50%) scale(1.02);
@@ -4262,6 +4641,7 @@ async def index(request: Request):
       font-weight: 700;
       letter-spacing: 0.08em;
       text-transform: uppercase;
+      line-height: 1.35;
     }}
 
     .graph-selection-head {{
@@ -4274,7 +4654,7 @@ async def index(request: Request):
     .graph-selection-head h4 {{
       margin: 0;
       font-size: 1.1rem;
-      line-height: 1.05;
+      line-height: 1.18;
       letter-spacing: -0.03em;
     }}
 
@@ -4295,6 +4675,7 @@ async def index(request: Request):
     .graph-selection-rule {{
       margin: 0;
       color: rgba(64, 46, 34, 0.72);
+      line-height: 1.58;
     }}
 
     .graph-selection-pill,
@@ -4324,6 +4705,7 @@ async def index(request: Request):
       color: var(--primary);
       font-size: 13px;
       font-weight: 700;
+      line-height: 1.35;
     }}
 
     .graph-fallback {{
@@ -4392,10 +4774,13 @@ async def index(request: Request):
       h1 {{ max-width: none; }}
       .hero-meta {{ margin-top: 12px; }}
       .stat {{ min-height: 0; }}
-      .agent-card-shell {{ border-radius: 24px; padding: 12px; }}
+      .agent-card-shell {{ border-radius: 0; padding: 0; }}
       .agent-visual-panel {{
         border-right: 0;
         border-bottom: 1px solid rgba(31,31,37,0.08);
+      }}
+      .agent-pdp {{
+        align-items: stretch;
       }}
       .graph-toolbar {{
         grid-template-columns: 1fr;
@@ -4404,6 +4789,10 @@ async def index(request: Request):
         padding: 16px;
       }}
       .capability-copy {{
+        flex-direction: column;
+        align-items: start;
+      }}
+      .runtime-table-head {{
         flex-direction: column;
         align-items: start;
       }}
@@ -4423,25 +4812,60 @@ async def index(request: Request):
     }}
 
     @media (max-width: 700px) {{
+      body {{
+        padding: 12px;
+      }}
       .site-header {{
         align-items: center;
-        padding: 12px 14px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
       }}
       .brand-copy {{
         max-width: 12rem;
       }}
-      .graph-canvas-shell {{
-        height: 22rem;
+      .nav-cta {{
+        min-height: 38px;
+        padding: 0 12px;
+        font-size: 12px;
       }}
-      .graph-toolbar-meta {{
-        flex-direction: column;
-        align-items: start;
+      .graph-canvas-shell {{
+        height: 16rem;
+      }}
+      .agent-surface {{
+        margin-top: 10px;
+      }}
+      .agent-pdp {{
+        border-radius: 22px;
+      }}
+      .agent-visual-panel {{
+        padding: 10px;
+      }}
+      .graph-toolbar,
+      .graph-toolbar-meta,
+      .graph-selection-dock {{
+        display: none;
       }}
       .agent-visual-panel .graph-canvas-shell {{
-        height: 22rem;
+        height: min(48vh, 16rem);
+        border-radius: 18px;
+      }}
+      .agent-detail-rail {{
+        padding: 14px;
+        gap: 12px;
+      }}
+      .agent-detail-title h1 {{
+        font-size: clamp(1.9rem, 10vw, 2.7rem);
+      }}
+      .agent-detail-summary {{
+        padding-top: 10px;
+        font-size: 0.9rem;
+      }}
+      .agent-cta {{
+        min-height: 48px;
       }}
       .agent-detail-row {{
         grid-template-columns: 1fr;
+        padding: 10px 0;
       }}
       .agent-detail-row strong,
       .agent-detail-row a {{
@@ -4462,20 +4886,32 @@ async def index(request: Request):
         </svg>
         <span class='brand-copy'>
           <span class='brand-name'>Radius</span>
-          <span class='brand-subtitle'>Agent Ecosystem</span>
+          <span class='brand-subtitle'>Agent Profile</span>
         </span>
       </a>
+      <nav class='site-nav' aria-label='Agent actions'>
+        <a class='nav-cta' href='{template_repo}' target='_blank' rel='noopener'>Create your agent</a>
+      </nav>
     </header>
 
     <main class='agent-surface'>
       <section class='agent-card-shell'>
         <div class='agent-pdp'>
           <section class='agent-visual-panel'>
+            <div
+              class='graph-canvas-shell'
+              id='agent-graph-root'
+              data-graph-endpoint='/agent-graph.json'
+            >
+              <canvas class='graph-canvas' aria-label='Agent capability graph'></canvas>
+              <div class='graph-label-layer' aria-hidden='true'></div>
+              <div class='graph-status' data-graph-status hidden></div>
+            </div>
             <div class='graph-toolbar'>
               <input
                 class='graph-search-input'
                 type='search'
-                placeholder='Search skills, plugins, tools, channels or surfaces'
+                placeholder='Search skills, capabilities, tools, channels or surfaces'
                 aria-label='Search graph nodes'
                 data-graph-search
               >
@@ -4484,7 +4920,6 @@ async def index(request: Request):
                 <option value='surface'>Surfaces</option>
                 <option value='capability'>Capabilities</option>
                 <option value='skill'>Skills</option>
-                <option value='plugin'>Plugins</option>
                 <option value='tool'>Tools</option>
                 <option value='channel'>Channels</option>
               </select>
@@ -4494,15 +4929,15 @@ async def index(request: Request):
               <span class='graph-result-count' data-graph-result-count>All runtime nodes</span>
               <span class='graph-toolbar-hint'>Click a node to focus</span>
             </div>
-            <div
-              class='graph-canvas-shell'
-              id='agent-graph-root'
-              data-graph-endpoint='/agent-graph.json'
-            >
-              <canvas class='graph-canvas' aria-label='Agent capability graph'></canvas>
-              <div class='graph-label-layer' aria-hidden='true'></div>
-              <div class='graph-status' data-graph-status>Loading capability graph…</div>
-            </div>
+            <section class='graph-selection-dock'>
+              <div class='agent-detail-card'>
+                <h2>Selected Node</h2>
+                <p>Click a node in the graph to inspect its current role in the runtime.</p>
+                <div data-graph-selection>
+                  <p class='graph-selection-empty'>Select a node to inspect its current details.</p>
+                </div>
+              </div>
+            </section>
           </section>
 
           <aside class='agent-detail-rail'>
@@ -4513,11 +4948,6 @@ async def index(request: Request):
 
             <div class='agent-detail-summary'>{html.escape(graph_summary)}</div>
 
-            <div class='agent-cta-stack'>
-              <a class='agent-cta primary' href='{template_repo}' target='_blank' rel='noopener'>Create a similar agent</a>
-              <a class='agent-cta secondary' href='{html.escape(explorer_link)}' target='_blank' rel='noopener'>View Radius wallet</a>
-            </div>
-
             {wallet_note}
 
             <div class='agent-detail-table'>
@@ -4527,31 +4957,32 @@ async def index(request: Request):
               <div class='agent-detail-row'><span>EVM Address</span><a href='{html.escape(explorer_link)}' target='_blank' rel='noopener'>{html.escape(wallet_address)}</a></div>
               <div class='agent-detail-row'><span>Discovery</span><strong>{graph_external_count}</strong></div>
               <div class='agent-detail-row'><span>Internals</span><strong>{graph_internal_count}</strong></div>
+              <div class='agent-detail-row'><span>Capabilities</span><strong>{graph_capability_count}</strong></div>
+              <div class='agent-detail-row'><span>Tools</span><strong>{graph_tool_count}</strong></div>
               <div class='agent-detail-row'><span>Published Skills</span><strong>{graph_published_skill_count}</strong></div>
-              <div class='agent-detail-row'><span>Plugin Packages</span><strong>{graph_plugin_count}</strong></div>
             </div>
-
-            <section class='agent-detail-card'>
-              <h2>Selected Node</h2>
-              <p>Click a node in the graph to inspect its current role in the runtime.</p>
-              <div data-graph-selection>
-                <p class='graph-selection-empty'>Select a node to inspect its current details.</p>
-              </div>
-            </section>
-
-            <section class='agent-detail-card'>
-              <h2>Interface Details</h2>
-              <div class='fact-list'>{discovery_facts_html}</div>
-            </section>
           </aside>
         </div>
       </section>
       <section class='agent-runtime-sections'>
         <div class='agent-runtime-head'>
           <h2>Runtime Details</h2>
-          <p>Capabilities, skills, plugins, tools, channels, and external surfaces generated from the current implementation.</p>
+          <p>Capabilities, tools, skills, channels, and external surfaces generated from the current implementation.</p>
         </div>
-        <div class='graph-fallback runtime-grid'>{graph_fallback_html}</div>
+        <section class='runtime-table-section'>
+          <div class='runtime-table-head'>
+            <h3>Capabilities</h3>
+            <p>Plugin-backed and runtime-native capabilities, with the tools summarized in each row.</p>
+          </div>
+          {capability_table_html}
+        </section>
+        <section class='runtime-table-section'>
+          <div class='runtime-table-head'>
+            <h3>External Surfaces & Interfaces</h3>
+            <p>Well-known discovery URIs and public operational interfaces exposed by this agent.</p>
+          </div>
+          {surface_table_html}
+        </section>
       </section>
     </main>
 
@@ -4565,27 +4996,58 @@ async def index(request: Request):
     return response
 
 
-@app.get("/.well-known/api-catalog")
-async def api_catalog():
-    a2a_endpoint = f"{BASE_URL}/a2a"
+@app.api_route("/.well-known/api-catalog", methods=["GET", "HEAD"])
+async def api_catalog(request: Request):
     docs_url = f"{BASE_URL}/"
+    openapi_url = f"{BASE_URL}/openapi.json"
     status_url = f"{BASE_URL}/health"
+
+    def links(*items: tuple[str, str]) -> list[dict[str, str]]:
+        return [{"rel": rel, "href": href} for rel, href in items]
+
     payload = {
         "linkset": [
             {
-                "anchor": a2a_endpoint,
-                "links": [
-                    {"rel": "service-desc", "href": f"{BASE_URL}/.well-known/agent-card.json"},
-                    {"rel": "service-doc", "href": docs_url},
-                    {"rel": "status", "href": status_url},
-                ],
-            }
+                "anchor": f"{BASE_URL}/a2a",
+                "links": links(
+                    ("service-desc", f"{BASE_URL}/.well-known/agent-card.json"),
+                    ("service-doc", docs_url),
+                    ("status", status_url),
+                ),
+            },
+            {
+                "anchor": f"{BASE_URL}/.well-known/agent-card.json",
+                "links": links(
+                    ("service-desc", f"{BASE_URL}/.well-known/agent-card.json"),
+                    ("service-doc", docs_url),
+                    ("status", status_url),
+                ),
+            },
+            {
+                "anchor": f"{BASE_URL}/.well-known/agent-skills/index.json",
+                "links": links(
+                    ("service-desc", f"{BASE_URL}/.well-known/agent-skills/index.json"),
+                    ("service-doc", docs_url),
+                    ("status", status_url),
+                ),
+            },
+            {
+                "anchor": openapi_url,
+                "links": links(
+                    ("service-desc", openapi_url),
+                    ("service-doc", docs_url),
+                    ("status", status_url),
+                ),
+            },
         ]
     }
+    headers = {"Cache-Control": "public, max-age=300"}
+    if request.method == "HEAD":
+        return Response(status_code=200, media_type="application/linkset+json", headers=headers)
     return Response(
         content=json.dumps(payload),
         media_type="application/linkset+json",
-        headers={"Cache-Control": "public, max-age=300"},
+        headers=headers,
     )
 
 

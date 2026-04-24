@@ -1,30 +1,92 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-const AGENT_COLOR = 0xf3c96d;
-const AGENT_EMISSIVE = 0xdd7857;
-const EXTERNAL_COLOR = 0xeb6359;
-const INTERNAL_COLOR = 0x302834;
 const LINE_COLOR = 0xd6b67a;
-const DEFAULT_CAMERA_POSITION = new THREE.Vector3(0, 1.7, 12.8);
+const DEFAULT_CAMERA_POSITION = new THREE.Vector3(0, 1.85, 16.6);
 const DEFAULT_CAMERA_TARGET = new THREE.Vector3(0, 0.35, 0);
+const ORBIT_BASE_SPEED = 0.055;
 const BASE_NODE_SCALE = {
   agent: 1.28,
   surface: 0.42,
   capability: 0.35,
   skill: 0.31,
-  plugin: 0.38,
+  plugin: 0.29,
   tool: 0.28,
   channel: 0.32,
+};
+const NODE_VISUAL_SCHEMA = {
+  agent: {
+    color: 0xf3c96d,
+    emissive: 0xdd7857,
+    emissiveIntensity: 0.35,
+    metalness: 0.24,
+    roughness: 0.24,
+  },
+  surface: {
+    color: 0xeb6359,
+    emissive: 0x5d211a,
+    emissiveIntensity: 0.22,
+    metalness: 0.12,
+    roughness: 0.36,
+  },
+  interface: {
+    color: 0x7fc7ff,
+    emissive: 0x143a58,
+    emissiveIntensity: 0.2,
+    metalness: 0.14,
+    roughness: 0.34,
+  },
+  capability: {
+    color: 0xa8d86f,
+    emissive: 0x2c4b17,
+    emissiveIntensity: 0.21,
+    metalness: 0.1,
+    roughness: 0.38,
+  },
+  skill: {
+    color: 0xffb86f,
+    emissive: 0x563015,
+    emissiveIntensity: 0.19,
+    metalness: 0.1,
+    roughness: 0.4,
+  },
+  tool: {
+    color: 0x8f8cff,
+    emissive: 0x25215e,
+    emissiveIntensity: 0.18,
+    metalness: 0.13,
+    roughness: 0.37,
+  },
+  channel: {
+    color: 0x63d8c6,
+    emissive: 0x164d46,
+    emissiveIntensity: 0.2,
+    metalness: 0.12,
+    roughness: 0.39,
+  },
+  plugin: {
+    color: 0x596070,
+    emissive: 0x171a22,
+    emissiveIntensity: 0.1,
+    metalness: 0.08,
+    roughness: 0.48,
+  },
+  internal: {
+    color: 0x302834,
+    emissive: 0x17121d,
+    emissiveIntensity: 0.14,
+    metalness: 0.1,
+    roughness: 0.42,
+  },
 };
 const STRUCTURED_GROUP_ORDER = [
   "external:surfaces",
   "external:interfaces",
   "internal:capabilities",
   "internal:skills",
-  "internal:plugins",
   "internal:tools",
   "internal:channels",
+  "internal:plugins",
 ];
 const STRUCTURED_GROUP_LAYOUT = {
   "external:surfaces": {
@@ -122,22 +184,144 @@ function normalizeText(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+function getNodeVisualType(node) {
+  if (node.kind === "agent") {
+    return "agent";
+  }
+  if (node.external) {
+    return node.category === "interfaces" ? "interface" : "surface";
+  }
+  if (node.kind === "skill" || node.category === "skills") {
+    return "skill";
+  }
+  if (node.kind === "tool" || node.category === "tools") {
+    return "tool";
+  }
+  if (node.kind === "capability" || node.category === "capabilities") {
+    return "capability";
+  }
+  if (node.kind === "channel" || node.category === "channels") {
+    return "channel";
+  }
+  if (node.kind === "plugin" || node.category === "plugins") {
+    return "plugin";
+  }
+  return "internal";
+}
+
+function getNodeVisualSchema(node) {
+  return (
+    NODE_VISUAL_SCHEMA[getNodeVisualType(node)] || NODE_VISUAL_SCHEMA.internal
+  );
+}
+
+function getNodeTypeLabel(node) {
+  switch (getNodeVisualType(node)) {
+    case "agent":
+      return "Agent";
+    case "surface":
+      return "External surface";
+    case "interface":
+      return "External interface";
+    case "capability":
+      return "Capability";
+    case "skill":
+      return "Skill";
+    case "tool":
+      return "Tool";
+    case "channel":
+      return "Internal channel";
+    case "plugin":
+      return "Implementation support";
+    default:
+      return node.kind || "Node";
+  }
+}
+
+function stableHash(value) {
+  return Array.from(String(value || "")).reduce(
+    (total, character) => (total * 31 + character.charCodeAt(0)) % 997,
+    7,
+  );
+}
+
+function buildOrbitMeta(node, position) {
+  if (node.id === "agent") {
+    return null;
+  }
+  const radius = Math.hypot(position.x, position.z);
+  if (radius < 0.001) {
+    return null;
+  }
+  const seed = stableHash(node.id);
+  const direction = seed % 2 === 0 ? 1 : -1;
+  const speedByKind = {
+    surface: 0.84,
+    capability: 0.58,
+    skill: 0.72,
+    tool: 1.08,
+    channel: 0.48,
+  };
+  return {
+    angle: Math.atan2(position.z, position.x),
+    radius,
+    speed:
+      ORBIT_BASE_SPEED *
+      direction *
+      (speedByKind[node.kind] || 0.66) *
+      (0.82 + (seed % 7) * 0.055),
+    y: position.y,
+    yAmplitude: 0.035 + (seed % 5) * 0.008,
+    yPhase: seed * 0.017,
+  };
+}
+
 function getNodeScale(node) {
   return BASE_NODE_SCALE[node.kind] || 0.28;
 }
 
 function getNodeColor(node) {
-  if (node.kind === "agent") {
-    return AGENT_COLOR;
-  }
-  return node.external ? EXTERNAL_COLOR : INTERNAL_COLOR;
+  return getNodeVisualSchema(node).color;
 }
 
 function getNodeEmissive(node) {
-  if (node.kind === "agent") {
-    return AGENT_EMISSIVE;
+  return getNodeVisualSchema(node).emissive;
+}
+
+function normalizeKindFilterValue(value) {
+  return value === "plugin" ? "capability" : value || "all";
+}
+
+function matchesKindFilter(node, kindFilter) {
+  if (!kindFilter || kindFilter === "all") {
+    return true;
   }
-  return node.external ? 0x4f1d17 : 0x17121d;
+  return node.kind === kindFilter;
+}
+
+function updateGraphControlLabels(searchInput, kindFilter) {
+  if (searchInput?.placeholder) {
+    searchInput.placeholder =
+      "Search capabilities, skills, tools, channels, surfaces or interfaces";
+  }
+
+  const capabilityOption = kindFilter?.querySelector(
+    'option[value="capability"]',
+  );
+  if (capabilityOption) {
+    capabilityOption.textContent = "Capabilities";
+  }
+
+  const pluginOption = kindFilter?.querySelector('option[value="plugin"]');
+  if (!pluginOption) {
+    return;
+  }
+  if (capabilityOption) {
+    pluginOption.remove();
+    return;
+  }
+  pluginOption.value = "capability";
+  pluginOption.textContent = "Capabilities";
 }
 
 function getFallbackGroupLayout(index, total) {
@@ -237,7 +421,7 @@ function buildSelectionView(root, node, edgeCount) {
 
   const kicker = document.createElement("div");
   kicker.className = "graph-selection-kicker";
-  kicker.textContent = node.external ? "External surface" : node.kind || "Node";
+  kicker.textContent = getNodeTypeLabel(node);
   root.appendChild(kicker);
 
   const head = document.createElement("div");
@@ -263,7 +447,7 @@ function buildSelectionView(root, node, edgeCount) {
   meta.className = "graph-selection-meta";
   [
     node.external ? "External" : "Internal",
-    node.kind || "node",
+    getNodeTypeLabel(node),
     node.status || `${edgeCount} links`,
   ]
     .filter(Boolean)
@@ -317,7 +501,7 @@ function computeFilterState(payload, graphObjects, searchQuery, kindFilter) {
     if (node.id === "agent") {
       return;
     }
-    if (hasKind && node.kind !== kindFilter) {
+    if (hasKind && !matchesKindFilter(node, kindFilter)) {
       return;
     }
     if (
@@ -380,12 +564,14 @@ function createGraphObjects(payload, scene, labelLayer) {
   });
 
   payload.nodes.forEach((node) => {
+    const visualSchema = getNodeVisualSchema(node);
+    const visualType = getNodeVisualType(node);
     const material = new THREE.MeshStandardMaterial({
       color: getNodeColor(node),
-      roughness: node.kind === "agent" ? 0.24 : 0.38,
-      metalness: node.kind === "agent" ? 0.24 : 0.12,
+      roughness: visualSchema.roughness,
+      metalness: visualSchema.metalness,
       emissive: new THREE.Color(getNodeEmissive(node)),
-      emissiveIntensity: node.kind === "agent" ? 0.35 : 0.18,
+      emissiveIntensity: visualSchema.emissiveIntensity,
       transparent: true,
       opacity: 1,
     });
@@ -394,6 +580,8 @@ function createGraphObjects(payload, scene, labelLayer) {
     mesh.scale.setScalar(getNodeScale(node));
     mesh.userData.nodeId = node.id;
     mesh.userData.baseScale = getNodeScale(node);
+    mesh.userData.baseEmissiveIntensity = visualSchema.emissiveIntensity;
+    mesh.userData.orbit = buildOrbitMeta(node, mesh.position);
     mesh.userData.currentOpacity = 1;
     nodeGroup.add(mesh);
     nodeMeshes.push(mesh);
@@ -402,6 +590,7 @@ function createGraphObjects(payload, scene, labelLayer) {
     const label = document.createElement("div");
     label.className = "graph-label";
     label.dataset.nodeId = node.id;
+    label.dataset.kind = visualType;
     label.dataset.variant = node.external ? "external" : "internal";
     label.textContent = node.label || node.id;
     labelLayer.appendChild(label);
@@ -550,13 +739,16 @@ function getLabelPriority(node, viewState, adjacencyCounts) {
     priority += 180;
   }
   if (node.kind === "capability") {
-    priority += 120;
-  }
-  if (node.kind === "plugin") {
-    priority += 90;
+    priority += 130;
   }
   if (node.kind === "skill") {
-    priority += 72;
+    priority += 78;
+  }
+  if (node.kind === "tool" || node.kind === "channel") {
+    priority += 52;
+  }
+  if (node.kind === "plugin") {
+    priority += 10;
   }
   priority += Math.min(50, (adjacencyCounts.get(node.id) || 0) * 6);
   return priority;
@@ -665,11 +857,12 @@ function applyGraphVisualState(graphObjects, viewState) {
 
     mesh.scale.setScalar(mesh.userData.baseScale * scaleMultiplier);
     mesh.material.opacity = opacity;
+    const baseEmissiveIntensity = mesh.userData.baseEmissiveIntensity ?? 0.18;
     mesh.material.emissiveIntensity = isSelected
-      ? 0.72
+      ? Math.max(0.72, baseEmissiveIntensity + 0.34)
       : isHovered || viewState.matchedIds.has(nodeId)
-        ? 0.34
-        : 0.18;
+        ? Math.max(0.34, baseEmissiveIntensity + 0.16)
+        : baseEmissiveIntensity;
     mesh.userData.currentOpacity = opacity;
   });
 
@@ -680,6 +873,37 @@ function applyGraphVisualState(graphObjects, viewState) {
   graphObjects.labels.forEach((label, nodeId) => {
     label.classList.toggle("is-selected", nodeId === viewState.selectedNodeId);
     label.classList.toggle("is-hovered", nodeId === viewState.hoveredNodeId);
+  });
+}
+
+function updateIdleOrbit(graphObjects, elapsedSeconds) {
+  if (!graphObjects) {
+    return;
+  }
+
+  graphObjects.nodeMeshes.forEach((mesh) => {
+    const orbit = mesh.userData.orbit;
+    if (!orbit) {
+      return;
+    }
+    const angle = orbit.angle + elapsedSeconds * orbit.speed;
+    mesh.position.x = Math.cos(angle) * orbit.radius;
+    mesh.position.z = Math.sin(angle) * orbit.radius;
+    mesh.position.y =
+      orbit.y + Math.sin(elapsedSeconds * Math.abs(orbit.speed) * 1.7 + orbit.yPhase) * orbit.yAmplitude;
+  });
+
+  graphObjects.edgeMeshes.forEach((edge) => {
+    const source = graphObjects.nodeMeshMap.get(edge.source);
+    const target = graphObjects.nodeMeshMap.get(edge.target);
+    if (!source || !target) {
+      return;
+    }
+    const positions = edge.geometry.attributes.position;
+    positions.setXYZ(0, source.position.x, source.position.y, source.position.z);
+    positions.setXYZ(1, target.position.x, target.position.y, target.position.z);
+    positions.needsUpdate = true;
+    edge.geometry.computeBoundingSphere();
   });
 }
 
@@ -694,6 +918,7 @@ export function initAgentGraph(root) {
     "[data-graph-result-count]",
   );
   const selectionRoot = document.querySelector("[data-graph-selection]");
+  updateGraphControlLabels(searchInput, kindFilter);
   let renderer;
   let scene;
   let camera;
@@ -709,8 +934,11 @@ export function initAgentGraph(root) {
   let ready = false;
   let animationFrame = 0;
   let searchQuery = "";
-  let kindFilterValue = "all";
+  let kindFilterValue = normalizeKindFilterValue(kindFilter?.value || "all");
   let focusTransitionFrames = 0;
+  let orbitPaused = false;
+  let orbitElapsedSeconds = 0;
+  let lastFrameTime = 0;
   const desiredTarget = DEFAULT_CAMERA_TARGET.clone();
   const desiredCameraPosition = DEFAULT_CAMERA_POSITION.clone();
   let filterState = {
@@ -722,6 +950,14 @@ export function initAgentGraph(root) {
   const setStatus = (message) => {
     if (status) {
       status.textContent = message;
+      status.hidden = !message;
+    }
+  };
+
+  const pauseIdleOrbit = () => {
+    orbitPaused = true;
+    if (controls) {
+      controls.autoRotate = false;
     }
   };
 
@@ -781,9 +1017,7 @@ export function initAgentGraph(root) {
     if (filterState.hasFiltering && !filterState.matchedIds.size) {
       setStatus("No matching nodes. Adjust the search or type filter.");
     } else {
-      setStatus(
-        "Search, filter, or click a node to focus. Reset restores the full graph.",
-      );
+      setStatus("");
     }
   };
 
@@ -812,7 +1046,7 @@ export function initAgentGraph(root) {
     if (offset.lengthSq() < 0.0001) {
       offset.copy(DEFAULT_CAMERA_POSITION).sub(DEFAULT_CAMERA_TARGET);
     }
-    const distance = Math.max(8.9, Math.min(12.2, offset.length()));
+    const distance = Math.max(11.5, Math.min(15.8, offset.length()));
     offset.normalize().multiplyScalar(distance);
 
     desiredTarget.copy(worldPosition);
@@ -860,9 +1094,19 @@ export function initAgentGraph(root) {
       return;
     }
     animationFrame = requestAnimationFrame(renderFrame);
+    const now = performance.now();
+    const deltaSeconds = lastFrameTime
+      ? Math.min(0.05, (now - lastFrameTime) / 1000)
+      : 0;
+    lastFrameTime = now;
     if (resizeRendererToDisplaySize(renderer)) {
       camera.aspect = canvas.clientWidth / canvas.clientHeight;
       camera.updateProjectionMatrix();
+    }
+
+    if (!orbitPaused && !filterState.hasFiltering && !focusedNodeId) {
+      orbitElapsedSeconds += deltaSeconds;
+      updateIdleOrbit(graphObjects, orbitElapsedSeconds);
     }
 
     if (focusTransitionFrames > 0) {
@@ -883,6 +1127,7 @@ export function initAgentGraph(root) {
       return;
     }
     active = true;
+    lastFrameTime = performance.now();
     renderFrame();
   };
 
@@ -912,25 +1157,28 @@ export function initAgentGraph(root) {
     if (!ready) {
       return;
     }
+    pauseIdleOrbit();
     updatePointer(event);
     const pickedNode = pickNode();
     if (pickedNode) {
-      controls.autoRotate = false;
       setSelection(pickedNode, { focus: true });
     }
   };
 
   const handleSearchInput = (event) => {
+    pauseIdleOrbit();
     searchQuery = event.currentTarget.value || "";
     refreshFilterState();
   };
 
   const handleKindFilter = (event) => {
-    kindFilterValue = event.currentTarget.value || "all";
+    pauseIdleOrbit();
+    kindFilterValue = normalizeKindFilterValue(event.currentTarget.value);
     refreshFilterState();
   };
 
   const handleClear = () => {
+    pauseIdleOrbit();
     if (searchInput) {
       searchInput.value = "";
     }
@@ -949,6 +1197,8 @@ export function initAgentGraph(root) {
     canvas.removeEventListener("pointermove", handlePointerMove);
     canvas.removeEventListener("pointerleave", handlePointerLeave);
     canvas.removeEventListener("click", handleClick);
+    canvas.removeEventListener("pointerdown", pauseIdleOrbit);
+    canvas.removeEventListener("wheel", pauseIdleOrbit);
     searchInput?.removeEventListener("input", handleSearchInput);
     kindFilter?.removeEventListener("change", handleKindFilter);
     clearButton?.removeEventListener("click", handleClear);
@@ -985,15 +1235,14 @@ export function initAgentGraph(root) {
   controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.enablePan = false;
-  controls.minDistance = 8.5;
-  controls.maxDistance = 20;
+  controls.minDistance = 11;
+  controls.maxDistance = 26;
   controls.minPolarAngle = Math.PI * 0.22;
   controls.maxPolarAngle = Math.PI * 0.7;
-  controls.autoRotate = true;
-  controls.autoRotateSpeed = 0.38;
+  controls.autoRotate = false;
   controls.target.copy(DEFAULT_CAMERA_TARGET);
   controls.addEventListener("start", () => {
-    controls.autoRotate = false;
+    pauseIdleOrbit();
     focusTransitionFrames = 0;
   });
 
@@ -1017,6 +1266,8 @@ export function initAgentGraph(root) {
   canvas.addEventListener("pointermove", handlePointerMove);
   canvas.addEventListener("pointerleave", handlePointerLeave);
   canvas.addEventListener("click", handleClick);
+  canvas.addEventListener("pointerdown", pauseIdleOrbit);
+  canvas.addEventListener("wheel", pauseIdleOrbit, { passive: true });
   searchInput?.addEventListener("input", handleSearchInput);
   kindFilter?.addEventListener("change", handleKindFilter);
   clearButton?.addEventListener("click", handleClear);
@@ -1038,9 +1289,7 @@ export function initAgentGraph(root) {
       refreshFilterState();
       updateResultCount();
       ready = true;
-      setStatus(
-        "Search, filter, or click a node to focus. Reset restores the full graph.",
-      );
+      setStatus("");
       if (active) {
         renderFrame();
       }

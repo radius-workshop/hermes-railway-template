@@ -1,6 +1,8 @@
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -93,6 +95,84 @@ class AgentGraphTests(unittest.TestCase):
             ],
         }
 
+    def test_api_catalog_exposes_linkset_json_for_public_apis(self) -> None:
+        with TestClient(main.app) as client:
+            response = client.get("/.well-known/api-catalog")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("application/linkset+json", response.headers["content-type"])
+
+        payload = response.json()
+        self.assertEqual(set(payload), {"linkset"})
+        self.assertIsInstance(payload["linkset"], list)
+        self.assertGreaterEqual(len(payload["linkset"]), 3)
+
+        linksets_by_anchor = {
+            item.get("anchor"): item.get("links", []) for item in payload["linkset"]
+        }
+        expected_anchors = {
+            f"{main.BASE_URL}/a2a",
+            f"{main.BASE_URL}/.well-known/agent-card.json",
+            f"{main.BASE_URL}/.well-known/agent-skills/index.json",
+        }
+        self.assertTrue(expected_anchors.issubset(linksets_by_anchor))
+
+        for anchor, links in linksets_by_anchor.items():
+            self.assertTrue(str(anchor).startswith(main.BASE_URL), anchor)
+            self.assertIsInstance(links, list)
+            rels = {link.get("rel") for link in links}
+            self.assertTrue(
+                {"service-desc", "service-doc", "status"} & rels,
+                f"{anchor} missing discovery relations",
+            )
+            for link in links:
+                self.assertIn("rel", link)
+                self.assertIn("href", link)
+                self.assertTrue(str(link["href"]).startswith(main.BASE_URL))
+
+    def test_generated_skills_index_uses_v020_schema_and_entry_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            skills_root = Path(tmp)
+            published_dir = skills_root / "radius-wallet"
+            draft_dir = skills_root / "draft-skill"
+            published_dir.mkdir()
+            draft_dir.mkdir()
+            skill_md = (
+                "---\n"
+                "published: true\n"
+                "description: Inspect Radius wallet balances.\n"
+                "---\n"
+                "# Radius Wallet\n"
+            )
+            published_path = published_dir / "SKILL.md"
+            published_path.write_text(skill_md, encoding="utf-8")
+            (draft_dir / "SKILL.md").write_text(
+                "---\npublished: false\ndescription: Draft.\n---\n# Draft\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(main, "SKILLS_ROOT", str(skills_root)):
+                payload = json.loads(main._build_index())
+
+        self.assertEqual(
+            payload["$schema"],
+            "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+        )
+        self.assertEqual(len(payload["skills"]), 1)
+        skill = payload["skills"][0]
+        self.assertEqual(
+            set(skill),
+            {"name", "type", "description", "url", "digest"},
+        )
+        self.assertEqual(skill["name"], "radius-wallet")
+        self.assertEqual(skill["type"], "skill-md")
+        self.assertEqual(skill["description"], "Inspect Radius wallet balances.")
+        self.assertEqual(
+            skill["url"],
+            f"{main.BASE_URL}/.well-known/agent-skills/radius-wallet/SKILL.md",
+        )
+        self.assertRegex(skill["digest"], r"^sha256:[0-9a-f]{64}$")
+
     def test_graph_payload_exposes_runtime_nodes_and_redacts_secrets(self) -> None:
         published_index = json.dumps(
             {
@@ -173,13 +253,22 @@ class AgentGraphTests(unittest.TestCase):
         self.assertIn("surface:token", nodes)
         self.assertIn("capability:wallet", nodes)
         self.assertIn("channel:telegram", nodes)
-        self.assertIn("plugin:radius-cast", nodes)
         self.assertIn("tool:radius_balance", nodes)
         self.assertIn("skill:radius-wallet", nodes)
-        self.assertEqual(nodes["plugin:radius-cast"]["status"], "enabled")
+        self.assertEqual(nodes["tool:radius_balance"]["category"], "capabilities")
+        self.assertEqual(nodes["tool:radius_send_sbc"]["category"], "capabilities")
+        self.assertEqual(nodes["tool:generate_a2a_token"]["category"], "capabilities")
         self.assertNotIn("super-secret-api-key", serialized)
         self.assertNotIn("111,222", serialized)
         self.assertNotIn("secret-hook", serialized)
+
+        edges = {
+            (edge["source"], edge["target"], edge["kind"]) for edge in payload["edges"]
+        }
+        self.assertIn(("capability:wallet", "tool:radius_balance", "provides"), edges)
+        self.assertIn(("capability:wallet", "tool:radius_send_sbc", "provides"), edges)
+        self.assertIn(("capability:jwt", "tool:generate_a2a_token", "provides"), edges)
+        self.assertNotIn(("plugin:radius-cast", "tool:radius_balance", "provides"), edges)
 
     def test_graph_payload_skips_token_surface_without_exchange_key(self) -> None:
         with patch.dict(
@@ -222,8 +311,10 @@ class AgentGraphTests(unittest.TestCase):
 
         nodes = {node["id"]: node for node in payload["nodes"]}
         self.assertNotIn("surface:token", nodes)
-        self.assertEqual(nodes["plugin:agent-info"]["status"], "bundled")
-        self.assertEqual(nodes["plugin:gen-jwt"]["status"], "enabled")
+        self.assertEqual(nodes["tool:get_agent_info"]["category"], "capabilities")
+        self.assertEqual(nodes["tool:get_agent_info"]["status"], "bundled")
+        self.assertEqual(nodes["tool:generate_a2a_token"]["category"], "capabilities")
+        self.assertEqual(nodes["tool:generate_a2a_token"]["status"], "enabled")
 
     def test_homepage_renders_graph_tab_and_module_script(self) -> None:
         wallet_summary = {
@@ -259,7 +350,7 @@ class AgentGraphTests(unittest.TestCase):
                 response = client.get("/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("data-tab-target='graph'", response.text)
+        self.assertIn("id='agent-graph-root'", response.text)
         self.assertIn("/agent-graph.json", response.text)
         self.assertIn("/static/js/homepage.js", response.text)
 

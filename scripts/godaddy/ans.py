@@ -321,7 +321,8 @@ def _load_or_create_csr(
             if agent_host in dns_names and required_uri in uri_names:
                 return csr
         except x509.ExtensionNotFound:
-            pass
+            # Existing CSRs without SANs are stale for ANS registration; regenerate below.
+            csr = None
 
     builder = x509.CertificateSigningRequestBuilder().subject_name(
         _subject(agent_host, display_name)

@@ -2,8 +2,8 @@ import importlib.util
 import builtins
 import json
 import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 import yaml
 
@@ -150,7 +150,7 @@ class GoDaddyRuntimeDiscoveryTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("godaddy_ans_no_crypto", ans_path)
         module = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
-        with mock.patch("builtins.__import__", side_effect=guarded_import):
+        with unittest.mock.patch("builtins.__import__", side_effect=guarded_import):
             spec.loader.exec_module(module)
 
         fake_response = {
@@ -158,7 +158,7 @@ class GoDaddyRuntimeDiscoveryTests(unittest.TestCase):
             "url": "https://api.godaddy.com/v1/agents",
             "body": {"agents": [{"agentDisplayName": "Payment Bot"}]},
         }
-        with mock.patch.object(module, "_json_request", return_value=fake_response):
+        with unittest.mock.patch.object(module, "_json_request", return_value=fake_response):
             result = module.search_agents(query="payment")
 
         self.assertEqual(result["query"]["matched"], 1)

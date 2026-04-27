@@ -1,10 +1,9 @@
 import importlib.util
 import base64
-import json
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).resolve().parent / "ans.py"
@@ -166,7 +165,7 @@ class GoDaddyAnsBootstrapTests(unittest.TestCase):
                 "body": {"agents": []},
             }
 
-        with mock.patch.object(ans, "_json_request", side_effect=fake_request):
+        with unittest.mock.patch.object(ans, "_json_request", side_effect=fake_request):
             result = ans.search_agents(query="payments")
 
         self.assertEqual(result["query"]["text"], "payments")
@@ -200,7 +199,7 @@ class GoDaddyAnsBootstrapTests(unittest.TestCase):
                 "body": {"agents": []},
             }
 
-        with mock.patch.object(ans, "_json_request", side_effect=fake_request):
+        with unittest.mock.patch.object(ans, "_json_request", side_effect=fake_request):
             result = ans.search_agents(query="medicine")
 
         self.assertTrue(result["query"]["broadened"])
@@ -210,7 +209,7 @@ class GoDaddyAnsBootstrapTests(unittest.TestCase):
         self.assertIn({"agentDisplayName": "med", "limit": 20}, calls)
 
     def test_search_agents_bounds_swagger_pagination_and_status_all(self) -> None:
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             ans,
             "_json_request",
             return_value={"status_code": 200, "url": "x", "body": {"agents": []}},
@@ -223,7 +222,6 @@ class GoDaddyAnsBootstrapTests(unittest.TestCase):
                 status=["ACTIVE", "ALL"],
             )
 
-        _method, _path = request.call_args.args
         query = request.call_args.kwargs["query"]
         self.assertEqual(query["agentDisplayName"], "x" * 64)
         self.assertEqual(query["agentHost"], "agent.example.com")
@@ -236,7 +234,7 @@ class GoDaddyAnsBootstrapTests(unittest.TestCase):
             ans.search_agents(status=["ACTIVE", "PENDING_VALIDATION"])
 
     def test_resolve_agent_uses_swagger_post_body_and_allows_latest_version(self) -> None:
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             ans,
             "_json_request",
             return_value={"status_code": 200, "url": "x", "body": {}},
@@ -251,7 +249,7 @@ class GoDaddyAnsBootstrapTests(unittest.TestCase):
 
     def test_certificate_csr_submission_encodes_raw_pem_for_swagger_payload(self) -> None:
         pem = "-----BEGIN CERTIFICATE REQUEST-----\nabc\n-----END CERTIFICATE REQUEST-----\n"
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             ans,
             "_json_request",
             return_value={"status_code": 202, "url": "x", "body": {}},
@@ -264,7 +262,7 @@ class GoDaddyAnsBootstrapTests(unittest.TestCase):
         )
 
     def test_revoke_agent_normalizes_swagger_reason(self) -> None:
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             ans,
             "_json_request",
             return_value={"status_code": 200, "url": "x", "body": {}},
@@ -278,7 +276,7 @@ class GoDaddyAnsBootstrapTests(unittest.TestCase):
         )
 
     def test_events_bounds_swagger_limit(self) -> None:
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             ans,
             "_json_request",
             return_value={"status_code": 200, "url": "x", "body": {}},

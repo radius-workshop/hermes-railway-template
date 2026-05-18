@@ -25,6 +25,7 @@ This repository is a batteries-included Hermes template. Assume these bundled re
 - `plugins/*` are installed to `${HERMES_HOME}/plugins/` on every boot.
 - `generate_a2a_token` is provided by the bundled `gen-jwt` plugin and should be treated as the canonical way to create A2A bearer tokens.
 - `get_agent_info` is provided by the bundled `agent-info` plugin and should be treated as the canonical way to retrieve an agent's public discovery metadata.
+- `kya_validate_claims` is provided by the bundled `kya-spec` plugin and should be treated as the canonical way to verify a KYA/PAY/KYA-PAY JWT received from another agent — it fetches the issuer JWKS, verifies the ES256 signature, enforces claim shape and audience/environment binding, and tracks `jti` for replay protection. Optional trusted-issuer allowlist via `TRUSTED_KYA_ISSUERS` env var.
 - `radius_wallet_address`, `radius_balance`, `radius_send_sbc`, and `radius_tx_status` are provided by the bundled `radius-cli` plugin and should be treated as the canonical way to perform Radius wallet actions.
 - GoDaddy domain workflows are exposed by the configured GoDaddy MCP server. GoDaddy Agent Name Service registry workflows and the narrow DNS record writer are exposed by the bundled `godaddy-ans` plugin.
 - `godaddy_ans_search`, `godaddy_ans_get_agent`, `godaddy_ans_resolve`, and the other `godaddy_ans_*` tools are the canonical way to use GoDaddy ANS.

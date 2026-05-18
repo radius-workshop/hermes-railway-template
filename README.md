@@ -19,6 +19,7 @@ This template is worker-only: setup and configuration are done through Railway V
 - Built-in discovery aggregation tool via `get_agent_info`
 - Built-in deterministic ERC-8004 registry tools for reading and writing Radius agent registrations
 - Built-in outbound A2A helper via `send_a2a_message` with sender-side correlation logging
+- Built-in KYA spec verification tool via `kya_validate_claims` (fetches issuer JWKS, verifies ES256 signatures, enforces claim shape, audience/environment binding, and jti replay protection)
 - Railway-friendly observability: structured JSON logs from the agent server plus forwarded Hermes harness log files
 
 ## How it works
@@ -106,6 +107,13 @@ The bundled public Radius-facing skills include the template-owned skills plus a
 - *"Send a task to https://<other-agent>/a2a asking it to introduce itself."*
 - *"Use the outbound A2A tool to ask the peer agent what skills it has."*
 - *"Continue the existing A2A conversation with the peer agent and ask for a status update."*
+
+### KYA / KYAPay spec workflows
+
+- *"Verify this `kya+jwt` token from another agent against expected audience `swaps.radius.xyz`."*
+- *"Validate this KYA-PAY JWT and tell me whether the signature checks against the issuer JWKS."*
+- *"Check this KYA token but only accept it if the issuer is in our trusted allowlist."*
+- *"Validate this KYA token with replay protection disabled — I just want to inspect the claims."*
 
 ### ERC-8004 registration workflows
 

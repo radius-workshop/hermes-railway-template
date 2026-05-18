@@ -22,6 +22,17 @@ from cryptography.hazmat.primitives.asymmetric.ec import (
 PLUGIN_PATH = (
     Path(__file__).resolve().parents[1] / "plugins" / "kya-spec" / "__init__.py"
 )
+KYA_VERIFY_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "agent_server" / "kya_verify.py"
+)
+
+# Load kya_verify first so the plugin (which imports it) picks up our copy.
+_kv_spec = importlib.util.spec_from_file_location("kya_verify", KYA_VERIFY_PATH)
+kya_verify = importlib.util.module_from_spec(_kv_spec)
+assert _kv_spec and _kv_spec.loader
+import sys as _sys
+_sys.modules["kya_verify"] = kya_verify
+_kv_spec.loader.exec_module(kya_verify)
 
 spec = importlib.util.spec_from_file_location("kya_spec_plugin", PLUGIN_PATH)
 kya_spec_plugin = importlib.util.module_from_spec(spec)
@@ -94,8 +105,7 @@ class KyaSpecPluginTests(unittest.TestCase):
         kya_spec_plugin.register(self.ctx)
         self.handler = self.ctx.tools["kya_validate_claims"]["handler"]
         # Reset module-level caches between tests so jti replay is per-test.
-        kya_spec_plugin._SEEN_JTI = kya_spec_plugin._JTILRU()
-        kya_spec_plugin._JWKS = kya_spec_plugin._JWKSCache()
+        kya_verify.reset_caches()
 
     def _build(
         self,
@@ -115,8 +125,8 @@ class KyaSpecPluginTests(unittest.TestCase):
     def _run(self, token: str, **kwargs) -> dict:
         params = {"token_type": "kya", "token": token, "expected_audience": "seller-abc"}
         params.update(kwargs)
-        # Patch the JWKS HTTP fetch to return our fixture.
-        with patch.object(kya_spec_plugin, "_http_get_json", return_value=self.jwks):
+        # Patch the JWKS HTTP fetch on kya_verify to return our fixture.
+        with patch.object(kya_verify, "_http_get_json", return_value=self.jwks):
             return json.loads(self.handler(params))
 
     # ---- Registration ----
@@ -211,7 +221,7 @@ class KyaSpecPluginTests(unittest.TestCase):
     def test_audience_required_by_default(self):
         token, _, _ = self._build()
         # Don't pass expected_audience at all and don't override default.
-        with patch.object(kya_spec_plugin, "_http_get_json", return_value=self.jwks):
+        with patch.object(kya_verify, "_http_get_json", return_value=self.jwks):
             report = json.loads(
                 self.handler({"token_type": "kya", "token": token})
             )

@@ -60,6 +60,7 @@ from erc8004_registry import (
 from a2a_bridge import A2ABridge
 from a2a_sessions import A2ASessionStore
 from auth import get_did, get_did_document, issue_token, jwt_auth_dep, setup_auth
+import kya_verify
 from hermes_client import HermesClient, HermesUnavailableError, HermesUpstreamError
 from logging_utils import (
     clear_request_context,
@@ -1692,6 +1693,37 @@ async def did_document_route():
         headers={
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "public, max-age=600",
+        },
+    )
+
+
+@app.get("/.well-known/jwks.json")
+async def jwks_document_route():
+    """Publish the JWKS for this agent's KYA / OAuth signing key.
+
+    The KYA spec mandates this URL exists at the issuer so verifying agents
+    can resolve the public half of the signing keypair. We always serve at
+    least the KYA P-256 key; the OAuth metadata endpoints already advertise
+    this URL and now it's no longer a dangling reference.
+    """
+    try:
+        jwks = kya_verify.get_kya_jwks()
+    except Exception as err:  # defensive — key dir unwritable, etc.
+        log_event(
+            logger,
+            logging.ERROR,
+            "Failed to assemble JWKS",
+            event="kya.jwks",
+            outcome="error",
+            error=str(err),
+        )
+        return JSONResponse({"error": "JWKS unavailable"}, status_code=503)
+    return Response(
+        content=json.dumps(jwks),
+        media_type="application/jwk-set+json",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=3600",
         },
     )
 
@@ -5443,6 +5475,57 @@ async def handle_a2a(request: Request, auth: dict = Depends(jwt_auth_dep)):
         a2a_message_id=message_id,
         prompt_chars=prompt_chars,
     )
+
+    # ——— KYA inbound policy ———
+    # Optional layer on top of DID-based JWT auth. Controlled by env:
+    #   KYA_INBOUND_POLICY=off|opportunistic|required (default: off)
+    #   KYA_INBOUND_HEADER=skyfire-pay-id           (default per KYA spec)
+    #   KYA_EXPECTED_AUDIENCE=...                   (defaults to this agent's BASE_URL)
+    #   KYA_EXPECTED_ENVIRONMENT=production|sandbox|...
+    #   TRUSTED_KYA_ISSUERS=https://issuer-a,...    (allowlist)
+    kya_token = request.headers.get(kya_verify.inbound_header_name())
+    expected_aud = kya_verify.inbound_expected_audience() or BASE_URL
+    kya_decision = kya_verify.evaluate_inbound(
+        token=kya_token,
+        expected_audience=expected_aud,
+    )
+    kya_report = kya_decision.get("report")
+    kya_log_payload = {
+        "event": "a2a.kya",
+        "kya_action": kya_decision["action"],
+        "kya_policy": kya_verify.inbound_policy(),
+        "kya_present": bool(kya_token),
+        "rpc_id": rpc_id,
+        "rpc_method": method,
+        "issuer_did": auth.get("issuer"),
+        "context_id": context_id,
+    }
+    if kya_report is not None:
+        kya_log_payload["kya_issuer"] = kya_report.issuer
+        kya_log_payload["kya_signature_verified"] = kya_report.signature_verified
+        if kya_report.errors:
+            kya_log_payload["kya_errors"] = kya_report.errors[:5]
+        if kya_report.warnings:
+            kya_log_payload["kya_warnings"] = kya_report.warnings[:5]
+    if kya_decision.get("reason"):
+        kya_log_payload["kya_reason"] = kya_decision["reason"]
+
+    if kya_decision["action"] == "reject":
+        log_event(logger, logging.WARNING, "A2A KYA gate rejected request", **kya_log_payload)
+        return _rpc_error_response(
+            rpc_id,
+            InvalidRequestError(message="KYA verification required"),
+            status_code=401,
+        )
+    if kya_decision["action"] == "warn":
+        log_event(logger, logging.WARNING, "A2A KYA gate accepted with errors", **kya_log_payload)
+    elif kya_decision["action"] == "accept":
+        log_event(logger, logging.INFO, "A2A KYA gate accepted request", **kya_log_payload)
+        update_request_context(kya_issuer=kya_report.issuer if kya_report else None)
+    # action == "skip" is the no-op default; only log when policy is on but token absent.
+    elif kya_decision.get("reason") == "no_token" and kya_verify.inbound_policy() != "off":
+        log_event(logger, logging.DEBUG, "A2A KYA gate skipped (no token)", **kya_log_payload)
+
     managed_session = (
         _a2a_session_store.find_by_context(context_id) if context_id else None
     )

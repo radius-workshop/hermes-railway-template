@@ -577,8 +577,6 @@ def verify_token(
 
 _KYA_KEY_LOCK = threading.Lock()
 _KYA_PRIVATE_KEY = None  # cryptography.hazmat.primitives.asymmetric.ec.EllipticCurvePrivateKey
-_KYA_KID: str | None = None
-_KYA_JWKS: dict[str, Any] | None = None
 
 
 def _kya_key_dir() -> Path:
@@ -621,11 +619,14 @@ def setup_kya_key() -> tuple[str, dict[str, Any]]:
     Persistence: PEM private key at ``${HERMES_HOME}/.radius/kya/key.pem``
     with file mode 0600. If absent, a fresh P-256 key is generated.
     """
-    global _KYA_PRIVATE_KEY, _KYA_KID, _KYA_JWKS
+    global _KYA_PRIVATE_KEY
 
     with _KYA_KEY_LOCK:
-        if _KYA_PRIVATE_KEY is not None and _KYA_KID and _KYA_JWKS:
-            return _KYA_KID, _KYA_JWKS
+        if _KYA_PRIVATE_KEY is not None:
+            public_key = _KYA_PRIVATE_KEY.public_key()
+            kid = _kid_from_public_key(public_key)
+            jwks = {"keys": [_public_key_to_jwk(public_key, kid)]}
+            return kid, jwks
 
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ec import (
@@ -673,8 +674,6 @@ def setup_kya_key() -> tuple[str, dict[str, Any]]:
         jwks = {"keys": [_public_key_to_jwk(public_key, kid)]}
 
         _KYA_PRIVATE_KEY = private_key
-        _KYA_KID = kid
-        _KYA_JWKS = jwks
         return kid, jwks
 
 

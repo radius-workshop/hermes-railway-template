@@ -10,7 +10,6 @@ import sys
 import tempfile
 import time
 import unittest
-import uuid
 from pathlib import Path
 from unittest.mock import patch
 

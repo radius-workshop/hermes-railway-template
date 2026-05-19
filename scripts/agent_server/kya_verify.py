@@ -30,13 +30,15 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +143,8 @@ def reset_caches() -> None:
 
 
 def _http_get_json(url: str, timeout: int = DEFAULT_HTTP_TIMEOUT) -> dict[str, Any]:
+    _validate_outbound_jwks_url(url)
+
     req = Request(
         url,
         headers={
@@ -148,13 +152,51 @@ def _http_get_json(url: str, timeout: int = DEFAULT_HTTP_TIMEOUT) -> dict[str, A
             "User-Agent": "hermes-kya/2.0",
         },
     )
-    with urlopen(req, timeout=timeout) as response:
+
+    class _NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = build_opener(_NoRedirect)
+    with opener.open(req, timeout=timeout) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         raw = response.read().decode(charset, errors="replace")
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"Expected JSON object from {url}, got {type(data).__name__}")
     return data
+
+
+def _validate_outbound_jwks_url(url: str) -> None:
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("JWKS URL must use https")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("JWKS URL has no hostname")
+
+    try:
+        addrinfo = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except Exception as err:
+        raise ValueError(f"Unable to resolve JWKS host '{host}': {err}") from err
+
+    for _family, _socktype, _proto, _canonname, sockaddr in addrinfo:
+        ip_raw = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_raw)
+        except ValueError as err:
+            raise ValueError(f"Resolved host '{host}' to invalid IP '{ip_raw}': {err}") from err
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise ValueError(
+                f"Resolved host '{host}' to disallowed non-public IP '{ip}' for JWKS fetch"
+            )
 
 
 def _b64url_decode(segment: str) -> bytes:
@@ -196,6 +238,47 @@ def _select_jwk(jwks: dict[str, Any], kid: str) -> dict[str, Any]:
         if isinstance(key, dict) and key.get("kid") == kid:
             return key
     raise ValueError(f"No JWK matched header kid '{kid}'")
+
+
+def _issuer_allowed(issuer: str, trusted_issuers: set[str]) -> bool:
+    issuer_norm = issuer.strip().rstrip("/").lower()
+    parsed = urlsplit(issuer_norm)
+    host = parsed.hostname or ""
+    scheme = parsed.scheme
+
+    for raw in trusted_issuers:
+        pattern = str(raw).strip().rstrip("/").lower()
+        if not pattern:
+            continue
+
+        if pattern.startswith("https://*.") or pattern.startswith("http://*."):
+            pattern_parsed = urlsplit(pattern)
+            suffix = (pattern_parsed.hostname or "")
+            if suffix.startswith("*."):
+                suffix = suffix[2:]
+            if (
+                pattern_parsed.scheme == scheme
+                and host.endswith("." + suffix)
+                and host != suffix
+            ):
+                return True
+            continue
+
+        if pattern.startswith("*."):
+            suffix = pattern[2:]
+            if host.endswith("." + suffix) and host != suffix:
+                return True
+            continue
+
+        if "://" not in pattern:
+            if host == pattern:
+                return True
+            continue
+
+        if issuer_norm == pattern:
+            return True
+
+    return False
 
 
 def _verify_signature(token: str, jwk: dict[str, Any], expected_alg: str) -> None:
@@ -372,7 +455,7 @@ def _validate_shape(
         errors.append("Claim 'iss' must be an http(s) URL.")
     report.issuer = iss if isinstance(iss, str) else None
 
-    if trusted_issuers is not None and isinstance(iss, str) and iss not in trusted_issuers:
+    if trusted_issuers is not None and isinstance(iss, str) and not _issuer_allowed(iss, trusted_issuers):
         errors.append(f"Issuer '{iss}' is not in the trusted-issuer allowlist.")
 
     aud = payload.get("aud")

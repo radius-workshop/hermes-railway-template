@@ -92,11 +92,27 @@ curl -X POST http://localhost:3000/token \
 
 The server implements the [A2A protocol](https://github.com/a2aproject/A2A) over JSON-RPC 2.0 and uses the official `a2a-sdk` models for validation and envelope shaping.
 
+### A2A auth mode (`A2A_AUTH_MODE`)
+
+`POST /a2a` supports a configurable auth mode:
+
+- `did_only` (default): require DID-JWT auth, ignore KYA for authorization.
+- `did_and_kya`: require both DID-JWT and valid KYA.
+- `did_or_kya`: allow either DID-JWT or valid KYA.
+- `kya_only`: allow valid KYA without requiring DID allowlist pre-registration.
+
 ### KYA inbound gate
 
-`POST /a2a` runs an optional [KYAPay](https://kyapay.org/) verification layer on top of the existing DID-JWT auth. The gate is implemented in `scripts/agent_server/kya_verify.py` and wired into `handle_a2a` after `jwt_auth_dep` succeeds.
+The KYA lane is implemented in `scripts/agent_server/kya_verify.py` and is evaluated by `/a2a` according to `A2A_AUTH_MODE`.
 
 The gate reads the JWT from the `skyfire-pay-id` HTTP header (per the KYA spec), resolves the issuer's JWKS at `{iss}/.well-known/jwks.json`, verifies the ES256 signature, enforces required-claim shape, audience binding (against the agent's `BASE_URL` unless `KYA_EXPECTED_AUDIENCE` is set), environment binding (`KYA_EXPECTED_ENVIRONMENT`), and a trusted-issuer allowlist (`TRUSTED_KYA_ISSUERS`). It also tracks `(iss, jti)` in a bounded in-process LRU to mitigate replay.
+
+`TRUSTED_KYA_ISSUERS` supports both exact issuers and wildcard host suffixes:
+
+- exact: `https://agent0.72344.xyz`
+- wildcard subdomain: `https://*.72344.xyz`, `https://*.radiustech.xyz`
+
+Wildcard entries match subdomains only (not the apex host).
 
 Policies, set via `KYA_INBOUND_POLICY`:
 

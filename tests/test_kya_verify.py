@@ -260,6 +260,48 @@ class KyaMintTests(unittest.TestCase):
         result = kya_verify.parse_trusted_issuers(["https://a.example", "https://b.example"])
         self.assertEqual(result, {"https://a.example", "https://b.example"})
 
+    def test_wildcard_issuer_match(self):
+        report = kya_verify._validate_shape(
+            token_type="kya",
+            header={"alg": "ES256", "kid": "k", "typ": "kya+jwt"},
+            payload={
+                "iss": "https://agent0.72344.xyz",
+                "sub": "did:web:agent0.72344.xyz",
+                "aud": "https://peer.example",
+                "iat": int(time.time()),
+                "exp": int(time.time()) + 600,
+                "jti": "11111111-1111-1111-1111-111111111111",
+                "aid": {"name": "Agent", "creation_ip": "8.8.8.8"},
+            },
+            expected_audience="https://peer.example",
+            expected_environment=None,
+            trusted_issuers={"https://*.72344.xyz"},
+            clock_skew=60,
+            enforce_audience=True,
+        )
+        self.assertFalse(any("trusted-issuer allowlist" in e for e in report.errors), msg=report.errors)
+
+    def test_wildcard_does_not_match_apex(self):
+        report = kya_verify._validate_shape(
+            token_type="kya",
+            header={"alg": "ES256", "kid": "k", "typ": "kya+jwt"},
+            payload={
+                "iss": "https://72344.xyz",
+                "sub": "did:web:72344.xyz",
+                "aud": "https://peer.example",
+                "iat": int(time.time()),
+                "exp": int(time.time()) + 600,
+                "jti": "22222222-2222-2222-2222-222222222222",
+                "aid": {"name": "Agent", "creation_ip": "8.8.8.8"},
+            },
+            expected_audience="https://peer.example",
+            expected_environment=None,
+            trusted_issuers={"https://*.72344.xyz"},
+            clock_skew=60,
+            enforce_audience=True,
+        )
+        self.assertTrue(any("trusted-issuer allowlist" in e for e in report.errors), msg=report.errors)
+
 
 if __name__ == "__main__":
     unittest.main()

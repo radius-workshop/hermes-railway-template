@@ -106,6 +106,17 @@ def _default_creation_ip() -> str | None:
     return None
 
 
+def _default_hid() -> dict[str, str] | None:
+    """Optional default HID claim from env.
+
+    If KYA_HID_EMAIL_ADDRESS is unset/empty, HID is omitted entirely.
+    """
+    email = (os.environ.get("KYA_HID_EMAIL_ADDRESS") or "").strip()
+    if not email:
+        return None
+    return {"email": email}
+
+
 def register(ctx):
     schema = {
         "name": "generate_kya_token",
@@ -248,6 +259,11 @@ def register(ctx):
                     aid["source_ips"] = list(source_ips)
 
             hid = params.get("hid")
+            if hid is None:
+                hid = _default_hid()
+            elif isinstance(hid, dict) and not hid:
+                # Treat empty object as omitted; optionally hydrate from env.
+                hid = _default_hid()
             apd = params.get("apd")
             pay = params.get("pay")
             environment = params.get("environment") or kya_verify.inbound_expected_environment()

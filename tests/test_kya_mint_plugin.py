@@ -160,6 +160,32 @@ class KyaMintPluginTests(unittest.TestCase):
         self.assertIn("error", out)
         self.assertIn("public", out["error"].lower())
 
+    def test_hid_omitted_when_env_var_missing(self):
+        with patch.dict(os.environ, {"KYA_HID_EMAIL_ADDRESS": ""}, clear=False):
+            out = json.loads(self.handler({"audience": "https://peer.example"}))
+        self.assertNotIn("error", out, msg=out)
+        self.assertNotIn("hid", out["payload"])
+
+    def test_hid_defaults_from_env_when_missing_in_params(self):
+        with patch.dict(
+            os.environ,
+            {"KYA_HID_EMAIL_ADDRESS": "eriks.reks@radiustech.xyz"},
+            clear=False,
+        ):
+            out = json.loads(self.handler({"audience": "https://peer.example"}))
+        self.assertNotIn("error", out, msg=out)
+        self.assertEqual(out["payload"]["hid"]["email"], "eriks.reks@radiustech.xyz")
+
+    def test_empty_hid_object_uses_env_default(self):
+        with patch.dict(
+            os.environ,
+            {"KYA_HID_EMAIL_ADDRESS": "eriks.reks@radiustech.xyz"},
+            clear=False,
+        ):
+            out = json.loads(self.handler({"audience": "https://peer.example", "hid": {}}))
+        self.assertNotIn("error", out, msg=out)
+        self.assertEqual(out["payload"]["hid"]["email"], "eriks.reks@radiustech.xyz")
+
     def test_mint_fails_without_issuer_default(self):
         with patch.dict(os.environ, {}, clear=True):
             os.environ["HERMES_HOME"] = self.tmp
